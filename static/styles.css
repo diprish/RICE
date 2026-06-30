@@ -196,7 +196,8 @@ code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px;
 /* ---------- cards ---------- */
 .cards { display: grid; gap: 14px; }
 .cards.exec { grid-template-columns: repeat(5, 1fr); }
-.cards.types { grid-template-columns: repeat(4, 1fr); }
+.cards.types { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); grid-auto-rows: 1fr; }
+.cards.types .card { display: flex; flex-direction: column; justify-content: center; }
 .cards.raw  { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 15px 16px; box-shadow: var(--shadow); position: relative; overflow: hidden; }
@@ -395,3 +396,54 @@ table.matrix tr.total-row td, table.matrix td.total-col { background: var(--surf
   .cards.exec, .cards.types { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto; } }
+
+/* ============================================================
+   RICE TYPE COUNT EMPHASIS  —  append to the END of static/styles.css
+   Override-only. Makes the (n) count beside each RICE type stand out.
+   ============================================================ */
+
+/* Keep the type name and the count vertically centered on one line */
+.type-card .tc-name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+/* --- Option A · Solid pill (default) --- */
+.type-card .tc-count {
+  background: var(--dl-blue);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: 20px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Option B · Tinted chip (subtler) --- replace the block above with:
+.type-card .tc-count {
+  background: rgba(13,110,253,.12);
+  color: var(--dl-blue);
+  font-size: 13px; font-weight: 700;
+  padding: 2px 9px; border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+}
+*/
+
+/* --- Option C · Big bold number (no pill) --- replace with:
+.type-card .tc-name { align-items: baseline; }
+.type-card .tc-count {
+  font-size: 22px; font-weight: 800; line-height: 1;
+  color: var(--dl-blue); font-variant-numeric: tabular-nums;
+}
+*/
+
+/* Status legend dot in each breakdown row */
+.tc-row > span { display: inline-flex; align-items: center; gap: 7px; }
+.tc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+
+/* All Types total tile — tinted background + ring so it reads as the summary */
+.card.total-tile { background: rgba(4,106,56,.05); border-color: var(--dl-green); box-shadow: 0 0 0 1px var(--dl-green) inset, var(--shadow); }
+.card.total-tile::before { width: 5px; }
+.type-card .tc-count.total { background: var(--dl-green); }

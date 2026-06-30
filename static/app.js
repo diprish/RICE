@@ -449,36 +449,37 @@ function renderTypeCards(recs) {
     [...new Set(recs.map(r => r.rice_type))].filter(t => !TYPE_ORDER.includes(t))
   ).filter(t => recs.some(r => r.rice_type === t));
 
+  // First tile = All Types (the filtered total + status mix), then one per type.
+  const panels = [{ key: "all", label: "All Types", subset: recs, total: true }]
+    .concat(types.map(t => ({ key: slug(t), label: t, subset: recs.filter(r => r.rice_type === t), total: false })));
+
   const el = $("#typeCards");
-  el.innerHTML = types.map(t => {
-    const id = "donut_" + slug(t);
-    return `<div class="card">
+  el.innerHTML = panels.map(p => `<div class="card${p.total ? " total-tile" : ""}">
       <div class="type-card">
-        <div class="tc-stats" id="stats_${slug(t)}"></div>
-        <div class="donut-wrap"><canvas id="${id}"></canvas>
-          <div class="donut-center" id="center_${slug(t)}"></div>
+        <div class="tc-stats" id="stats_${p.key}"></div>
+        <div class="donut-wrap"><canvas id="donut_${p.key}"></canvas>
+          <div class="donut-center" id="center_${p.key}"></div>
         </div>
       </div>
-    </div>`;
-  }).join("");
+    </div>`).join("");
 
-  types.forEach(t => {
-    const subset = recs.filter(r => r.rice_type === t);
+  panels.forEach(p => {
+    const subset = p.subset;
     const sc = countByStatus(subset);
     const order = statusOrder(subset);
     const total = subset.length;
     const completed = sc["Completed"] || 0;
     const pct = total ? Math.round(100 * completed / total) : 0;
 
-    $("#stats_" + slug(t)).innerHTML =
-      `<div class="tc-name">${esc(t)} <span class="muted">(${total})</span></div>` +
-      order.map(s => sc[s] ? `<div class="tc-row"><span>${esc(s)}</span><b style="color:${statusColor(s)}">${sc[s]}</b></div>` : "").join("");
-    $("#center_" + slug(t)).innerHTML = `<div><b>${pct}%</b><small>complete</small></div>`;
+    $("#stats_" + p.key).innerHTML =
+      `<div class="tc-name">${esc(p.label)} <span class="tc-count${p.total ? " total" : ""}">${total}</span></div>` +
+      order.map(s => sc[s] ? `<div class="tc-row"><span><i class="tc-dot" style="background:${statusColor(s)}"></i>${esc(s)}</span><b style="color:${statusColor(s)}">${sc[s]}</b></div>` : "").join("");
+    $("#center_" + p.key).innerHTML = `<div><b>${pct}%</b><small>complete</small></div>`;
 
-    const ctx = $("#donut_" + slug(t));
-    if (State.charts[t]) State.charts[t].destroy();
+    const ctx = $("#donut_" + p.key);
+    if (State.charts[p.key]) State.charts[p.key].destroy();
     const labels = order.filter(s => sc[s]);
-    State.charts[t] = new Chart(ctx, {
+    State.charts[p.key] = new Chart(ctx, {
       type: "doughnut",
       data: {
         labels,
