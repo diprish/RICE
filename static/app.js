@@ -3,11 +3,20 @@
    ============================================================ */
 "use strict";
 
-const STATUS_ORDER = ["Completed", "In Progress", "Not Started", "Delayed", "Blocked", "Other"];
-const STATUS_COLOR = {
-  "Completed": "#046A38", "In Progress": "#00A3E0", "Not Started": "#97999B",
-  "Delayed": "#ED8B00", "Blocked": "#DA291C", "Other": "#6E2585"
-};
+// Color a raw Object Status by keyword (no executive-status mapping).
+function statusColor(s) {
+  const k = (s || "").toLowerCase();
+  if (k.includes("block")) return "#DA291C";
+  if (k.includes("delay")) return "#ED8B00";
+  if (k.includes("complete") || k.includes("done")) return "#046A38";
+  if (k.includes("not started") || k.includes("not-started")) return "#97999B";
+  if (/(progress|draft|fut|review|wip)/.test(k)) return "#00A3E0";
+  return "#6E2585";
+}
+// Distinct raw Object Status values present, in a sensible display order.
+function statusOrder(recs) {
+  return [...new Set(recs.map(r => r.object_status).filter(Boolean))].sort();
+}
 const TYPE_ORDER = ["Conversion", "Integration", "Report", "Extension"];
 const TYPE_COLOR = {
   "Conversion": "#0097A9", "Integration": "#00A3E0", "Report": "#046A38",
@@ -26,7 +35,7 @@ const State = {
   charts: {},            // donut chart instances by id
   gridApi: null,
   planView: "grid",
-  quick: {},             // transient quick-filters {rice_type, exec_status, object_status, assigned_sprint}
+  quick: {},             // transient quick-filters {rice_type, object_status, assigned_sprint}
   choices: {},
   allOptions: { org: [], module: [] },  // full universe of values, for "Select all"
 };
@@ -45,6 +54,8 @@ const fmtDate = (iso) => {
 };
 const parseISO = (iso) => iso ? new Date(iso + "T00:00:00") : null;
 const today = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
+// Local YYYY-MM-DD (avoids toISOString's UTC shift, which can split/merge weeks).
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const slug = (s) => String(s).replace(/[^a-zA-Z0-9]+/g, "");
 
 function toast(msg) {
@@ -149,7 +160,6 @@ async function loadData() {
     if (j.error) { toast("Error: " + j.message); return; }
     State.data = j;
     populateFilterOptions(j);
-    renderMappingLegend();
     $("#footMeta").textContent =
       `Source sheet: ${j.source_sheet} · ${j.record_count} objects · generated ${j.generated_at.replace("T", " ")}`;
     $("#brandSub").textContent = `${j.summary.total_in_scope} in-scope of ${j.record_count} RICE objects`;
@@ -169,12 +179,26 @@ function initFilters() {
   State.choices.module = new Choices($("#fModule"), {
     removeItemButton: true, placeholderValue: "Click to add — or use All / None / Invert", shouldSort: false, searchEnabled: true
   });
+  State.choices.release = new Choices($("#fRelease"), {
+    removeItemButton: true, placeholderValue: "Click to add — or use All / None / Invert", shouldSort: false, searchEnabled: true
+  });
+  State.choices.sub_entity = new Choices($("#fSubEntity"), {
+    removeItemButton: true, placeholderValue: "Click to add — or use All / None / Invert", shouldSort: false, searchEnabled: true
+  });
   $("#fOrg").addEventListener("change", applyFilters);
   $("#fModule").addEventListener("change", applyFilters);
+  $("#fRelease").addEventListener("change", applyFilters);
+  $("#fSubEntity").addEventListener("change", applyFilters);
   $("#fScope").addEventListener("change", applyFilters);
   let t;
   $("#fSearch").addEventListener("input", () => { clearTimeout(t); t = setTimeout(applyFilters, 180); });
   $("#clearFilters").addEventListener("click", clearAllFilters);
+
+  // Saved filter sets (persisted in localStorage).
+  $("#saveViewBtn").addEventListener("click", saveCurrentView);
+  $("#delViewBtn").addEventListener("click", deleteSelectedView);
+  $("#fSavedViews").addEventListener("change", e => { if (e.target.value) applySavedView(e.target.value); });
+  refreshSavedViews();
 
   // "All" / "None" shortcuts for the multi-select filters.
   $$("[data-selectall]").forEach(btn => btn.addEventListener("click", () => {
@@ -217,11 +241,15 @@ function selectAllChoices(which) {
 
 function populateFilterOptions(j) {
   const f = j.filters;
-  State.allOptions = { org: f.accountable_org.slice(), module: f.module.slice() };
+  State.allOptions = { org: f.accountable_org.slice(), module: f.module.slice(), release: (f.release || []).slice(), sub_entity: (f.sub_entity || []).slice() };
   State.choices.org.clearChoices();
   State.choices.org.setChoices(f.accountable_org.map(v => ({ value: v, label: v })), "value", "label", true);
   State.choices.module.clearChoices();
   State.choices.module.setChoices(f.module.map(v => ({ value: v, label: v })), "value", "label", true);
+  State.choices.release.clearChoices();
+  State.choices.release.setChoices((f.release || []).map(v => ({ value: v, label: v })), "value", "label", true);
+  State.choices.sub_entity.clearChoices();
+  State.choices.sub_entity.setChoices((f.sub_entity || []).map(v => ({ value: v, label: v })), "value", "label", true);
   const scope = $("#fScope");
   scope.innerHTML = `<option value="">All</option>` + f.in_scope.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
 }
@@ -230,6 +258,8 @@ function getBaseFilters() {
   return {
     org: State.choices.org.getValue(true) || [],
     module: State.choices.module.getValue(true) || [],
+    release: State.choices.release.getValue(true) || [],
+    sub_entity: State.choices.sub_entity.getValue(true) || [],
     scope: $("#fScope").value,
     search: $("#fSearch").value.trim().toLowerCase(),
   };
@@ -238,6 +268,8 @@ function getBaseFilters() {
 function clearAllFilters() {
   State.choices.org.removeActiveItems();
   State.choices.module.removeActiveItems();
+  State.choices.release.removeActiveItems();
+  State.choices.sub_entity.removeActiveItems();
   $("#fScope").value = "";
   $("#fSearch").value = "";
   State.quick = {};
@@ -250,6 +282,76 @@ function setQuick(obj) {
   document.getElementById("sec-plan").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+/* ---------------- saved filter sets ---------------- */
+const SAVED_VIEWS_KEY = "rice_saved_filters";
+
+function loadSavedViews() {
+  try { return JSON.parse(localStorage.getItem(SAVED_VIEWS_KEY)) || {}; }
+  catch { return {}; }
+}
+function storeSavedViews(views) {
+  localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(views));
+}
+
+// Snapshot every active filter so it can be restored later.
+function captureFilters() {
+  const f = getBaseFilters();
+  return {
+    org: f.org, module: f.module, release: f.release, sub_entity: f.sub_entity,
+    scope: $("#fScope").value, search: $("#fSearch").value,
+    quick: { ...State.quick },
+  };
+}
+
+function refreshSavedViews(selected = "") {
+  const views = loadSavedViews();
+  const names = Object.keys(views).sort((a, b) => a.localeCompare(b));
+  const sel = $("#fSavedViews");
+  sel.innerHTML = `<option value="">${names.length ? "— Apply saved —" : "— None saved —"}</option>` +
+    names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  sel.value = selected;
+}
+
+function saveCurrentView() {
+  const name = (prompt("Name this filter set:") || "").trim();
+  if (!name) return;
+  const views = loadSavedViews();
+  if (views[name] && !confirm(`Overwrite the saved filter "${name}"?`)) return;
+  views[name] = captureFilters();
+  storeSavedViews(views);
+  refreshSavedViews(name);
+  toast(`Saved filter "${name}"`);
+}
+
+function deleteSelectedView() {
+  const name = $("#fSavedViews").value;
+  if (!name) { toast("Pick a saved filter to delete"); return; }
+  if (!confirm(`Delete saved filter "${name}"?`)) return;
+  const views = loadSavedViews();
+  delete views[name];
+  storeSavedViews(views);
+  refreshSavedViews();
+  toast(`Deleted "${name}"`);
+}
+
+function applySavedView(name) {
+  const v = loadSavedViews()[name];
+  if (!v) return;
+  const setMulti = (which, vals) => {
+    const ch = State.choices[which];
+    ch.removeActiveItems();
+    if ((vals || []).length && typeof ch.setChoiceByValue === "function") ch.setChoiceByValue(vals);
+  };
+  setMulti("org", v.org);
+  setMulti("module", v.module);
+  setMulti("release", v.release);
+  setMulti("sub_entity", v.sub_entity);
+  $("#fScope").value = v.scope || "";
+  $("#fSearch").value = v.search || "";
+  State.quick = { ...(v.quick || {}) };
+  applyFilters();
+}
+
 const SEARCH_FIELDS = ["rice_id", "object_name", "description", "module", "source_system", "target_system",
   "functional_owner", "technical_owner", "rice_owner", "tech_spec_owner"];
 
@@ -260,13 +362,14 @@ function applyFilters() {
   State.filtered = State.data.records.filter(r => {
     if (f.org.length && !f.org.includes(r.accountable_org)) return false;
     if (f.module.length && !f.module.includes(r.module)) return false;
+    if (f.release.length && !f.release.includes(r.release)) return false;
+    if (f.sub_entity.length && !f.sub_entity.includes(r.sub_entity)) return false;
     if (f.scope && r.in_scope !== f.scope) return false;
     if (f.search) {
       const hay = SEARCH_FIELDS.map(k => r[k] || "").join(" ").toLowerCase();
       if (!hay.includes(f.search)) return false;
     }
     if (q.rice_type && r.rice_type !== q.rice_type) return false;
-    if (q.exec_status && r.exec_status !== q.exec_status) return false;
     if (q.object_status && r.object_status !== q.object_status) return false;
     if (q.assigned_sprint && r.assigned_sprint !== q.assigned_sprint) return false;
     return true;
@@ -278,8 +381,10 @@ function applyFilters() {
 
 function renderChips(f) {
   const chips = [];
-  f.org.forEach(v => chips.push(["Org", v, () => removeChoice("org", v)]));
-  f.module.forEach(v => chips.push(["Module", v, () => removeChoice("module", v)]));
+  addMultiChips(chips, "Org", "org", f.org);
+  addMultiChips(chips, "Module", "module", f.module);
+  addMultiChips(chips, "Release", "release", f.release);
+  addMultiChips(chips, "Sub Entity", "sub_entity", f.sub_entity);
   if (f.scope) chips.push(["In Scope", f.scope, () => { $("#fScope").value = ""; applyFilters(); }]);
   if (f.search) chips.push(["Search", `"${f.search}"`, () => { $("#fSearch").value = ""; applyFilters(); }]);
   Object.entries(State.quick).forEach(([k, v]) => {
@@ -288,6 +393,20 @@ function renderChips(f) {
   const wrap = $("#activeChips");
   wrap.innerHTML = chips.map((_, i) => `<span class="chip" data-i="${i}"><b>${esc(chips[i][0])}:</b> ${esc(chips[i][1])} <span class="x">✕</span></span>`).join("");
   $$(".chip .x", wrap).forEach((x, i) => x.addEventListener("click", () => chips[i][2]()));
+}
+// Collapse multi-select selections into a compact summary chip. Listing every
+// selected value (often the full set) is what made the filter bar explode.
+function addMultiChips(chips, label, which, vals) {
+  if (!vals.length) return;
+  const total = ((State.allOptions && State.allOptions[which]) || []).length;
+  const clearAll = () => { State.choices[which].removeActiveItems(); applyFilters(); };
+  if (total && vals.length === total) {
+    chips.push([label, `All (${total})`, clearAll]);
+  } else if (vals.length > 3) {
+    chips.push([label, `${vals.length} selected`, clearAll]);
+  } else {
+    vals.forEach(v => chips.push([label, v, () => removeChoice(which, v)]));
+  }
 }
 function removeChoice(which, value) {
   State.choices[which].removeActiveItemsByValue(value);
@@ -298,7 +417,6 @@ function removeChoice(which, value) {
    RENDER ALL
    ============================================================ */
 function renderAll(recs) {
-  renderExecCards(recs);
   renderTypeCards(recs);
   renderRawStatus(recs);
   renderSprintSummary(recs);
@@ -306,6 +424,7 @@ function renderAll(recs) {
   if (State.planView === "gantt") renderGantt(recs);
   renderCapacity(recs);
   renderRisk(recs);
+  renderOwnerFocus(recs);
   renderMatrix(recs);
   renderDataQuality(recs);
 }
@@ -320,37 +439,6 @@ function typeBreakdown(recs) {
   const m = {};
   recs.forEach(r => { m[r.rice_type] = (m[r.rice_type] || 0) + 1; });
   return m;
-}
-
-/* ============================================================
-   EXEC SUMMARY CARDS
-   ============================================================ */
-function renderExecCards(recs) {
-  const cards = [
-    { key: null, label: "Total Objects", cls: "total" },
-    { key: "Completed", label: "Completed", cls: "completed" },
-    { key: "In Progress", label: "In Progress", cls: "progress" },
-    { key: "Not Started", label: "Not Started", cls: "notstarted" },
-    { key: "__delayblock", label: "Delayed / Blocked", cls: "delayed" },
-  ];
-  const html = cards.map(c => {
-    let subset;
-    if (c.key === null) subset = recs;
-    else if (c.key === "__delayblock") subset = recs.filter(r => r.exec_status === "Delayed" || r.exec_status === "Blocked");
-    else subset = recs.filter(r => r.exec_status === c.key);
-    const bd = typeBreakdown(subset);
-    const breaks = TYPE_ORDER.filter(t => bd[t]).map(t =>
-      `<span>${t}<b>${bd[t]}</b></span>`).join("") || `<span class="muted">none</span>`;
-    const clickAttr = c.key && c.key !== "__delayblock" ? `data-status="${c.key}"` : (c.key === "__delayblock" ? `data-status="Delayed"` : "");
-    return `<div class="card ${c.cls} ${clickAttr ? "clickable" : ""}" ${clickAttr}>
-      <div class="card-label">${c.label}</div>
-      <div class="card-value">${subset.length}</div>
-      <div class="card-break">${breaks}</div>
-    </div>`;
-  }).join("");
-  const el = $("#execCards"); el.innerHTML = html;
-  $$(".card.clickable", el).forEach(card => card.addEventListener("click", () =>
-    setQuick({ exec_status: card.dataset.status })));
 }
 
 /* ============================================================
@@ -376,26 +464,27 @@ function renderTypeCards(recs) {
 
   types.forEach(t => {
     const subset = recs.filter(r => r.rice_type === t);
-    const sc = countByExec(subset);
+    const sc = countByStatus(subset);
+    const order = statusOrder(subset);
     const total = subset.length;
     const completed = sc["Completed"] || 0;
     const pct = total ? Math.round(100 * completed / total) : 0;
 
     $("#stats_" + slug(t)).innerHTML =
       `<div class="tc-name">${esc(t)} <span class="muted">(${total})</span></div>` +
-      STATUS_ORDER.map(s => sc[s] ? `<div class="tc-row"><span>${s}</span><b style="color:${STATUS_COLOR[s]}">${sc[s]}</b></div>` : "").join("");
+      order.map(s => sc[s] ? `<div class="tc-row"><span>${esc(s)}</span><b style="color:${statusColor(s)}">${sc[s]}</b></div>` : "").join("");
     $("#center_" + slug(t)).innerHTML = `<div><b>${pct}%</b><small>complete</small></div>`;
 
     const ctx = $("#donut_" + slug(t));
     if (State.charts[t]) State.charts[t].destroy();
-    const labels = STATUS_ORDER.filter(s => sc[s]);
+    const labels = order.filter(s => sc[s]);
     State.charts[t] = new Chart(ctx, {
       type: "doughnut",
       data: {
         labels,
         datasets: [{
           data: labels.map(s => sc[s]),
-          backgroundColor: labels.map(s => STATUS_COLOR[s]),
+          backgroundColor: labels.map(s => statusColor(s)),
           borderWidth: 2,
           borderColor: getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#fff",
         }],
@@ -407,8 +496,8 @@ function renderTypeCards(recs) {
     });
   });
 }
-function countByExec(recs) {
-  const m = {}; recs.forEach(r => m[r.exec_status] = (m[r.exec_status] || 0) + 1); return m;
+function countByStatus(recs) {
+  const m = {}; recs.forEach(r => m[r.object_status] = (m[r.object_status] || 0) + 1); return m;
 }
 
 /* ============================================================
@@ -433,21 +522,6 @@ function renderRawStatus(recs) {
 }
 
 /* ============================================================
-   MAPPING LEGEND (static)
-   ============================================================ */
-function renderMappingLegend() {
-  const rows = [
-    ["contains \"block\"", "Blocked"], ["contains \"delay\"", "Delayed"],
-    ["contains \"complete\" / \"done\"", "Completed"],
-    ["contains \"progress\"/\"draft\"/\"FUT\"/\"review\"", "In Progress"],
-    ["empty / \"not started\"", "Not Started"], ["anything else", "Other"],
-  ];
-  $("#mappingLegend").innerHTML = rows.map(([rule, out]) =>
-    `<div class="map-row"><span class="map-dot" style="background:${STATUS_COLOR[out]}"></span>
-      <code>${esc(rule)}</code><span class="arrow">→</span><b style="color:${STATUS_COLOR[out]}">${out}</b></div>`).join("");
-}
-
-/* ============================================================
    SPRINT SUMMARY
    ============================================================ */
 function renderSprintSummary(recs) {
@@ -460,11 +534,12 @@ function renderSprintSummary(recs) {
   const cards = phases.concat([{ name: "Unscheduled", type: "Unscheduled", status: "—", start: null, end: null }]);
   $("#sprintSummary").innerHTML = cards.map(p => {
     const list = groups[p.name] || [];
-    const sc = countByExec(list);
-    const seg = STATUS_ORDER.filter(s => sc[s]).map(s =>
-      `<i style="width:${(100 * sc[s] / (list.length || 1)).toFixed(1)}%;background:${STATUS_COLOR[s]}" title="${s}: ${sc[s]}"></i>`).join("");
-    const breaks = STATUS_ORDER.filter(s => sc[s]).map(s =>
-      `<span>${s}<b> ${sc[s]}</b></span>`).join("") || `<span class="muted">no objects</span>`;
+    const sc = countByStatus(list);
+    const order = statusOrder(list);
+    const seg = order.filter(s => sc[s]).map(s =>
+      `<i style="width:${(100 * sc[s] / (list.length || 1)).toFixed(1)}%;background:${statusColor(s)}" title="${esc(s)}: ${sc[s]}"></i>`).join("");
+    const breaks = order.filter(s => sc[s]).map(s =>
+      `<span>${esc(s)}<b> ${sc[s]}</b></span>`).join("") || `<span class="muted">no objects</span>`;
     const dates = p.start ? `${fmtDate(p.start)} – ${fmtDate(p.end)}` : "Not date-assigned";
     return `<div class="sprint-card phase-${esc(p.type)}" data-sprint="${esc(p.name)}">
       <div class="sprint-head"><h3>${esc(p.name)}</h3><span class="sprint-status">${esc(p.status)}</span></div>
@@ -482,10 +557,6 @@ function renderSprintSummary(recs) {
    AG GRID (Delivery Plan)
    ============================================================ */
 function riceBadge(p) { return `<span class="rice-badge rice-${slug(p.value)}">${esc(p.value)}</span>`; }
-function statusPill(p) {
-  const v = p.value || "—";
-  return `<span class="st-pill" style="background:${STATUS_COLOR[v] || "#97999B"}">${esc(v)}</span>`;
-}
 function pctRenderer(p) {
   if (p.value == null) return `<span class="muted">—</span>`;
   return `${Math.round(p.value)}%`;
@@ -502,12 +573,11 @@ function gridColumns() {
     { headerName: "Design Sprint", field: "design_sprint", pinned: "left", width: 120, cellClass: "crumb" },
     { headerName: "Dev Sprint", field: "dev_sprint", pinned: "left", width: 130, cellClass: "crumb",
       valueFormatter: p => (p.value || "").replace(/\n/g, " → ") },
-    { headerName: "Complexity", field: "complexity", pinned: "left", width: 105 },
-    { headerName: "Build Hrs", field: "build_hours", pinned: "left", width: 95, type: "numericColumn",
-      valueFormatter: p => p.value == null ? "—" : fmtNum(p.value) },
+    { headerName: "Complexity / Build Hrs", colId: "complexity_hours", field: "complexity", pinned: "left", width: 175,
+      valueGetter: p => `${p.data.complexity || "—"} · ${p.data.build_hours == null ? "—" : fmtNum(p.data.build_hours) + " hrs"}`,
+      cellRenderer: p => `${esc(p.data.complexity || "—")} <span class="muted">· ${p.data.build_hours == null ? "—" : esc(fmtNum(p.data.build_hours)) + " hrs"}</span>` },
     { headerName: "Functional Owner", field: "functional_owner", pinned: "left", width: 160 },
     // scrolling columns
-    { headerName: "Exec Status", field: "exec_status", width: 130, cellRenderer: statusPill },
     { headerName: "Object Status", field: "object_status", width: 150 },
     { headerName: "Module", field: "module", width: 110 },
     { headerName: "Workstream", field: "workstream", width: 120 },
@@ -578,18 +648,26 @@ function renderGantt(recs) {
   // pad a week each side
   minD = new Date(minD.getTime() - 6 * 864e5); maxD = new Date(maxD.getTime() + 6 * 864e5);
   const span = maxD - minD;
-  const LABEL_W = 240, ROW_H = 26, TOP = 46, PX_W = 1180;
+  const LABEL_W = 240, ROW_H = 26, TOP = 72, PX_W = 1180;
   const x = (d) => LABEL_W + ((d - minD) / span) * PX_W;
   const H = TOP + rows.length * ROW_H + 12;
   const W = LABEL_W + PX_W + 20;
 
-  // phase shading rects + labels
+  // phase shading rects + labels. Labels are center-anchored; when one would
+  // overlap the previous label (e.g. a wide Cutover band next to the 1-day
+  // Go-Live milestone) it drops to a second row so the text never collides.
   let bg = "", axis = "";
+  const lastRight = { 1: -1e9, 2: -1e9 };
   tl.forEach(p => {
     const ps = parseISO(p.start), pe = parseISO(p.end);
     const x1 = x(ps), x2 = Math.max(x(pe), x1 + 2);
     bg += `<rect x="${x1}" y="${TOP}" width="${x2 - x1}" height="${rows.length * ROW_H}" fill="${PHASE_FILL[p.name] || "rgba(0,0,0,.03)"}"/>`;
-    axis += `<text x="${(x1 + x2) / 2}" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="var(--text-2)">${esc(p.name)}</text>`;
+    const cx = (x1 + x2) / 2;
+    const halfW = (esc(p.name).length * 6.4 + 6) / 2;   // approx label half-width
+    const row = (cx - halfW < lastRight[1] + 4) ? 2 : 1;
+    lastRight[row] = cx + halfW;
+    const ly = row === 1 ? 30 : 44;
+    axis += `<text x="${cx}" y="${ly}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--text-2)">${esc(p.name)}</text>`;
     axis += `<line x1="${x1}" y1="${TOP}" x2="${x1}" y2="${H - 12}" stroke="var(--border)" stroke-dasharray="3 3"/>`;
   });
   // month gridlines
@@ -598,7 +676,7 @@ function renderGantt(recs) {
     const mx = x(m);
     if (mx > LABEL_W) {
       axis += `<line x1="${mx}" y1="${TOP - 6}" x2="${mx}" y2="${H - 12}" stroke="var(--border)" opacity=".6"/>`;
-      axis += `<text x="${mx + 3}" y="${TOP - 9}" font-size="9.5" fill="var(--muted)">${m.toLocaleDateString(undefined, { month: "short", year: "2-digit" })}</text>`;
+      axis += `<text x="${mx + 3}" y="${TOP - 14}" font-size="9.5" fill="var(--muted)">${m.toLocaleDateString(undefined, { month: "short", year: "2-digit" })}</text>`;
     }
     m = new Date(m.getFullYear(), m.getMonth() + 1, 1);
   }
@@ -609,7 +687,10 @@ function renderGantt(recs) {
   if (cwEnd > minD && cwStart < maxD) {
     const cx1 = x(cwStart < minD ? minD : cwStart), cx2 = x(cwEnd > maxD ? maxD : cwEnd);
     bg += `<rect x="${cx1}" y="${TOP}" width="${Math.max(cx2 - cx1, 3)}" height="${rows.length * ROW_H}" fill="var(--ph-current)"/>`;
-    axis += `<text x="${cx1 + 2}" y="${TOP - 22}" font-size="9" font-weight="700" fill="var(--dl-orange)">now</text>`;
+    // "now" gets its own top lane with a connector line down to the band, so it
+    // never collides with the phase or month labels below it.
+    axis += `<line x1="${cx1}" y1="14" x2="${cx1}" y2="${TOP}" stroke="var(--dl-orange)" stroke-width="1" stroke-dasharray="2 2" opacity=".7"/>`;
+    axis += `<text x="${cx1 + 3}" y="11" font-size="9" font-weight="700" fill="var(--dl-orange)">now</text>`;
   }
 
   // bars
@@ -617,7 +698,7 @@ function renderGantt(recs) {
   rows.forEach((r, i) => {
     const y = TOP + i * ROW_H, cy = y + ROW_H / 2;
     const xs = x(parseISO(r.gantt_start)), xd = x(parseISO(r.gantt_delivery));
-    const barColor = STATUS_COLOR[r.exec_status] || "#00A3E0";
+    const barColor = TYPE_COLOR[r.rice_type] || "#00A3E0";
     if (i % 2 === 0) bars += `<rect x="${LABEL_W}" y="${y}" width="${PX_W + 20}" height="${ROW_H}" fill="var(--surface-2)" opacity=".5"/>`;
     // label
     const nm = (r.object_name || "").length > 30 ? r.object_name.slice(0, 29) + "…" : r.object_name;
@@ -658,9 +739,11 @@ function renderGantt(recs) {
 function weekKey(d) {
   const x = new Date(d); x.setHours(0, 0, 0, 0);
   x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); // Monday
-  return x.toISOString().slice(0, 10);
+  return ymd(x);
 }
 function renderCapacity(recs) {
+  // Conversions are excluded from capacity planning (row + All Types totals).
+  recs = recs.filter(r => r.rice_type !== "Conversion");
   const HPW = State.data.hours_per_dev_week || 45;
   const tl = State.data.timeline;
   let minD = parseISO(tl[0].start), maxD = parseISO(tl[tl.length - 1].end);
@@ -680,7 +763,7 @@ function renderCapacity(recs) {
     if (s < minD) minD = s; if (d > maxD) maxD = d;
     const weeks = [];
     let w = new Date(s); w.setDate(w.getDate() - ((w.getDay() + 6) % 7));
-    while (w <= d) { weeks.push(weekKey(w)); w = new Date(w.getTime() + 7 * 864e5); }
+    while (w <= d) { weeks.push(weekKey(w)); w.setDate(w.getDate() + 7); }
     if (!weeks.length) weeks.push(weekKey(s));
     const per = r.build_hours / weeks.length;
     weeks.forEach(wk => addHours(wk, r.rice_type, per, r.rice_id));
@@ -689,7 +772,7 @@ function renderCapacity(recs) {
   // week column list
   const cols = [];
   let w = new Date(minD); w.setDate(w.getDate() - ((w.getDay() + 6) % 7));
-  while (w <= maxD) { cols.push(weekKey(w)); w = new Date(w.getTime() + 7 * 864e5); }
+  while (w <= maxD) { cols.push(weekKey(w)); w.setDate(w.getDate() + 7); }
   const curWk = weekKey(today());
 
   const phaseOf = (wk) => {
@@ -737,8 +820,10 @@ function renderCapacity(recs) {
        <span><i style="background:rgba(218,41,28,.6)"></i> 5+</span>
        <span class="muted">developers needed = ⌈weekly build hours ÷ ${HPW}⌉ · click a cell for objects</span>
      </div>
-     <table class="heat"><thead>${head}</thead>
-       <tbody>${rowsTypes.map(typeRow).join("")}${totalRow()}</tbody></table>`;
+     <div class="cap-scroll">
+       <table class="heat"><thead>${head}</thead>
+         <tbody>${rowsTypes.map(typeRow).join("")}${totalRow()}</tbody></table>
+     </div>`;
 
   $$(".heat-cell", $("#capacityHeat")).forEach(td => td.addEventListener("click", () => {
     const wk = td.dataset.wk, type = td.dataset.type;
@@ -772,13 +857,13 @@ function riskItems(list, kind) {
     const db = parseISO(kind === "spec" ? b.spec_effective : b.delivery_date) || new Date(8640e12);
     return da - db;
   }).map(r => {
-    const blocked = r.exec_status === "Blocked";
+    const blocked = (r.object_status || "").toLowerCase().includes("block");
     const date = kind === "spec" ? r.spec_effective : r.delivery_date;
-    const stat = kind === "spec" ? (r.fspec_status || r.exec_status) : (r.dev_status || r.exec_status);
+    const stat = kind === "spec" ? (r.fspec_status || r.object_status) : (r.dev_status || r.object_status);
     const pct = kind === "spec" ? r.spec_pct : r.dev_pct;
     return `<div class="risk-item ${blocked ? "blocked" : ""}" data-id="${esc(r.rice_id)}">
       <div class="ri-top"><span class="ri-name">${esc(r.object_name)}</span>
-        <span class="st-pill" style="background:${STATUS_COLOR[r.exec_status]}">${r.exec_status}</span></div>
+        <span class="st-pill" style="background:${statusColor(r.object_status)}">${esc(r.object_status || "—")}</span></div>
       <div class="ri-meta">
         <span class="ri-id">${esc(r.rice_id)}</span>
         <span>${esc(r.rice_type)}</span>
@@ -790,12 +875,89 @@ function riskItems(list, kind) {
 }
 
 /* ============================================================
+   OWNER FOCUS — by Functional Owner: delayed + lean spec due this week
+   ============================================================ */
+// Lean spec date = Revised if present, else Planned.
+const leanSpecDate = (r) => r.spec_revised || r.spec_planned;
+
+function renderOwnerFocus(recs) {
+  const wkStart = parseISO(weekKey(today()));            // Monday of current week
+  const wkEnd = new Date(wkStart); wkEnd.setDate(wkEnd.getDate() + 7);
+
+  const isDelayed = (r) => (r.object_status || "").toLowerCase().includes("delay");
+  const isDueThisWeek = (r) => {
+    const d = parseISO(leanSpecDate(r));
+    return d && d >= wkStart && d < wkEnd;
+  };
+
+  const matches = [];
+  recs.forEach(r => {
+    const reasons = [];
+    if (isDelayed(r)) reasons.push("Delayed");
+    if (isDueThisWeek(r)) reasons.push("Spec due this week");
+    if (reasons.length) matches.push({ r, reasons });
+  });
+
+  const el = $("#ownerFocus");
+  if (!matches.length) {
+    el.innerHTML = `<div class="risk-empty">No delayed or lean-spec-due-this-week objects in the current filter. ✓</div>`;
+    return;
+  }
+
+  const groups = {};
+  matches.forEach(m => {
+    const owner = m.r.functional_owner || "— Unassigned —";
+    (groups[owner] = groups[owner] || []).push(m);
+  });
+  const owners = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+
+  el.innerHTML = owners.map(owner => {
+    const items = groups[owner].sort((a, b) =>
+      (parseISO(leanSpecDate(a.r)) || new Date(8640e12)) - (parseISO(leanSpecDate(b.r)) || new Date(8640e12)));
+    const delayedN = items.filter(i => i.reasons.includes("Delayed")).length;
+    const dueN = items.filter(i => i.reasons.includes("Spec due this week")).length;
+    return `<div class="owner-card">
+      <div class="owner-head">
+        <span class="owner-name">${esc(owner)}</span>
+        <span class="owner-counts">
+          ${delayedN ? `<span class="oc-badge delayed">${delayedN} delayed</span>` : ""}
+          ${dueN ? `<span class="oc-badge due">${dueN} due this week</span>` : ""}
+        </span>
+      </div>
+      <div class="owner-items">
+        ${items.map(({ r, reasons }) => {
+          const sd = leanSpecDate(r);
+          return `<div class="risk-item ${isDelayed(r) ? "blocked" : ""}" data-id="${esc(r.rice_id)}">
+            <div class="ri-top">
+              <span class="ri-name">${esc(r.object_name)}</span>
+              <span class="reason-tags">${reasons.map(rs =>
+                `<span class="oc-badge ${rs === "Delayed" ? "delayed" : "due"}">${rs}</span>`).join("")}</span>
+            </div>
+            <div class="ri-meta">
+              <span class="ri-id">${esc(r.rice_id)}</span>
+              <span>${esc(r.rice_type)}</span>
+              <span class="st-pill" style="background:${statusColor(r.object_status)}">${esc(r.object_status || "—")}</span>
+              <span>Spec: ${fmtDate(sd)}${r.spec_revised ? " (revised)" : (r.spec_planned ? " (planned)" : "")}</span>
+            </div>
+            ${r.description ? `<div class="ri-desc">${esc(r.description)}</div>` : ""}
+          </div>`;
+        }).join("")}
+      </div>
+    </div>`;
+  }).join("");
+
+  $$("#ownerFocus .risk-item").forEach(item => item.addEventListener("click", () => {
+    const r = recs.find(x => x.rice_id === item.dataset.id);
+    if (r) openModal(r.rice_id + " — " + r.object_name, [r], true);
+  }));
+}
+
+/* ============================================================
    MATRIX
    ============================================================ */
 function renderMatrix(recs) {
   const types = TYPE_ORDER.filter(t => recs.some(r => r.rice_type === t))
     .concat([...new Set(recs.map(r => r.rice_type))].filter(t => !TYPE_ORDER.includes(t)));
-  buildMatrix($("#matrixExec"), recs, types, STATUS_ORDER, "exec_status");
   const rawStatuses = [...new Set(recs.map(r => r.object_status).filter(Boolean))].sort();
   buildMatrix($("#matrixRaw"), recs, types, rawStatuses, "object_status");
 }
@@ -807,7 +969,7 @@ function buildMatrix(container, recs, rows, cols, field) {
     let rowTotal = 0;
     const tds = cols.map(c => {
       const n = count(t, c); rowTotal += n;
-      const color = field === "exec_status" ? STATUS_COLOR[c] : "";
+      const color = field === "object_status" ? statusColor(c) : "";
       return n ? `<td class="cell" data-type="${esc(t)}" data-col="${esc(c)}" data-field="${field}" style="${color ? `color:${color}` : ""}">${n}</td>`
         : `<td class="zero">·</td>`;
     }).join("");
@@ -867,7 +1029,7 @@ function openModal(title, list, detailed) {
     const f = (k, v) => `<div class="mi"><b>${k}</b> ${esc(v == null || v === "" ? "—" : v)}</div>`;
     $("#modalBody").innerHTML = `<div class="modal-list">
       ${f("Type", r.rice_type)} ${f("Module", r.module)} ${f("Workstream", r.workstream)}
-      ${f("Exec Status", r.exec_status)} ${f("Object Status", r.object_status)}
+      ${f("Object Status", r.object_status)}
       ${f("Description", r.description)}
       ${f("Functional Owner", r.functional_owner)} ${f("Technical Owner", r.technical_owner)}
       ${f("Complexity", r.complexity)} ${f("Build Hours", r.build_hours)}
@@ -880,7 +1042,7 @@ function openModal(title, list, detailed) {
   } else if (list.length) {
     $("#modalBody").innerHTML = `<div class="modal-list">` + list.map(r =>
       `<div class="mi"><b>${esc(r.rice_id)}</b> ${esc(r.object_name)} —
-        <span class="st-pill" style="background:${STATUS_COLOR[r.exec_status]};font-size:10px">${r.exec_status}</span>
+        <span class="st-pill" style="background:${statusColor(r.object_status)};font-size:10px">${esc(r.object_status || "—")}</span>
         <span class="muted"> ${esc(r.rice_type)} · ${r.build_hours == null ? "—" : r.build_hours + " hrs"} · ${esc(r.functional_owner || "no owner")}</span></div>`
     ).join("") + `</div>`;
   } else {
@@ -897,7 +1059,7 @@ function exportCSV() {
   const recs = State.filtered;
   if (!recs.length) { toast("Nothing to export."); return; }
   const cols = ["rice_id", "rice_type", "object_name", "module", "workstream", "accountable_org", "in_scope",
-    "object_status", "exec_status", "complexity", "build_hours", "spec_pct", "dev_pct",
+    "object_status", "complexity", "build_hours", "spec_pct", "dev_pct",
     "hours_consumed", "hours_left", "functional_owner", "technical_owner", "design_sprint", "dev_sprint",
     "spec_effective", "spec_actual", "delivery_date", "assigned_sprint", "lean_spec_risk", "build_risk",
     "source_system", "target_system"];

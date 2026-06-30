@@ -36,9 +36,9 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload cap
 
 # Program timeline (fixed configuration from the program plan).
 PROGRAM_TIMELINE = [
-    {"name": "Sprint 1", "type": "Sprint", "status": "Completed", "start": "2026-03-23", "end": "2026-04-27"},
-    {"name": "Sprint 2", "type": "Sprint", "status": "In Progress", "start": "2026-06-22", "end": "2026-07-13"},
-    {"name": "Sprint 3", "type": "Sprint", "status": "Planned", "start": "2026-07-27", "end": "2026-08-17"},
+    {"name": "Sprint 1", "type": "Sprint", "status": "Completed", "start": "2026-03-23", "end": "2026-04-24"},
+    {"name": "Sprint 2", "type": "Sprint", "status": "In Progress", "start": "2026-06-22", "end": "2026-07-17"},
+    {"name": "Sprint 3", "type": "Sprint", "status": "Planned", "start": "2026-07-27", "end": "2026-08-21"},
     {"name": "SIT 1", "type": "SIT", "status": "Planned", "start": "2026-09-28", "end": "2026-10-26"},
     {"name": "SIT 2", "type": "SIT", "status": "Planned", "start": "2026-11-09", "end": "2026-12-07"},
     {"name": "UAT", "type": "UAT", "status": "Planned", "start": "2026-12-14", "end": "2027-01-11"},
@@ -169,24 +169,6 @@ def clean_str(value):
     return s
 
 
-def map_exec_status(raw):
-    """Executive status bucket mapping."""
-    s = _norm(raw)
-    if not s or s in ("nan", "nat", "none"):
-        return "Not Started"
-    if "block" in s:
-        return "Blocked"
-    if "delay" in s:
-        return "Delayed"
-    if "complete" in s or "done" in s:
-        return "Completed"
-    if "not started" in s or "not-started" in s:
-        return "Not Started"
-    if any(k in s for k in ("progress", "draft", "fut", "review", "wip")):
-        return "In Progress"
-    return "Other"
-
-
 # --------------------------------------------------------------------------- #
 # Workbook loading
 # --------------------------------------------------------------------------- #
@@ -291,9 +273,6 @@ def process(path):
         rec["dev_pct_raw"] = clean_str(g(row, "dev_pct_raw"))
         rec["spec_pct_raw"] = clean_str(g(row, "spec_pct_raw"))
 
-        # executive status mapping
-        rec["exec_status"] = map_exec_status(rec["object_status"])
-
         # hours calc
         bh = rec["build_hours"]
         dp = rec["dev_pct"]
@@ -352,11 +331,12 @@ def process(path):
 
         # ---- Risk flags ----
         spec_eff_ts = pd.Timestamp(spec_eff) if spec_eff else None
-        completed = rec["exec_status"] == "Completed"
+        obj_stat = (rec["object_status"] or "").lower()
+        completed = "complete" in obj_stat or "done" in obj_stat
         lean = False
         if rec["fspec_status"] and "delay" in rec["fspec_status"].lower():
             lean = True
-        if rec["exec_status"] == "Delayed":
+        if "delay" in obj_stat:
             lean = True
         if spec_eff_ts is not None and not completed and not rec["spec_actual"]:
             if spec_eff_ts < today:
@@ -401,10 +381,11 @@ def _filter_options(records):
     return {
         "accountable_org": _uniq_sorted(r["accountable_org"] for r in records),
         "module": _uniq_sorted(r["module"] for r in records),
+        "release": _uniq_sorted(r["release"] for r in records),
+        "sub_entity": _uniq_sorted(r["sub_entity"] for r in records),
         "in_scope": _uniq_sorted(r["in_scope"] for r in records),
         "rice_type": _uniq_sorted(r["rice_type"] for r in records),
         "object_status": _uniq_sorted(r["object_status"] for r in records),
-        "exec_status": ["Completed", "In Progress", "Not Started", "Delayed", "Blocked", "Other"],
         "design_sprint": _uniq_sorted(r["design_sprint"] for r in records),
         "dev_sprint": _uniq_sorted(r["dev_sprint"] for r in records),
         "workstream": _uniq_sorted(r["workstream"] for r in records),
