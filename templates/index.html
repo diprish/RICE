@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RICE Delivery Tracker — Executive Dashboard</title>
+
+  <!-- Choices.js (multi-select) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/choices.js@10.2.0/public/assets/styles/choices.min.css" />
+  <!-- AG Grid -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/styles/ag-grid.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/styles/ag-theme-quartz.css" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body>
+
+<!-- ===================== STICKY NAV ===================== -->
+<header class="topbar" id="topbar">
+  <div class="brand">
+    <span class="brand-dot"></span>
+    <div class="brand-text">
+      <strong>RICE Delivery Tracker</strong>
+      <small id="brandSub">Oracle Cloud ERP Program · Executive View</small>
+    </div>
+  </div>
+  <nav class="navlinks" id="navlinks">
+    <a href="#sec-exec">Summary</a>
+    <a href="#sec-types">RICE Types</a>
+    <a href="#sec-rawstatus">Object Status</a>
+    <a href="#sec-sprints">Sprints</a>
+    <a href="#sec-plan">Delivery Plan</a>
+    <a href="#sec-capacity">Capacity</a>
+    <a href="#sec-risk">Risk</a>
+    <a href="#sec-matrix">Matrix</a>
+    <a href="#sec-dq">Data Quality</a>
+  </nav>
+  <div class="topactions">
+    <button id="exportBtn" class="btn btn-ghost" title="Export filtered rows to CSV">⭳ CSV</button>
+    <button id="themeBtn" class="btn btn-ghost" title="Toggle theme">◑ Theme</button>
+  </div>
+</header>
+
+<!-- ===================== UPLOAD SCREEN ===================== -->
+<section id="uploadScreen" class="upload-screen {{ '' if has_data else 'show' }}">
+  <div class="upload-card">
+    <div class="brand-dot big"></div>
+    <h1>RICE Delivery Tracker</h1>
+    <p>Drop your <code>rice_tracker_data.xlsx</code> workbook to begin, or browse to select it.</p>
+    <div id="dropZone" class="dropzone">
+      <div class="dz-inner">
+        <div class="dz-icon">⭱</div>
+        <div class="dz-main">Drag &amp; drop your Excel workbook here</div>
+        <div class="dz-sub">or</div>
+        <button class="btn btn-primary" id="browseBtn">Browse files</button>
+        <input type="file" id="fileInput" accept=".xlsx,.xls,.xlsm" hidden />
+        <div class="dz-hint">Accepted: .xlsx · .xls · .xlsm · max 50&nbsp;MB</div>
+      </div>
+    </div>
+    <div id="uploadMsg" class="upload-msg"></div>
+  </div>
+</section>
+
+<!-- ===================== DASHBOARD ===================== -->
+<main id="dashboard" class="dashboard {{ 'show' if has_data else '' }}">
+
+  <!-- FILTER BAR -->
+  <section class="filterbar" id="filterbar">
+    <div class="filter-field">
+      <label>Accountable Org
+        <span class="label-actions">
+          <button type="button" class="mini-link" data-selectall="org">All</button>
+          <button type="button" class="mini-link" data-selectnone="org">None</button>
+          <button type="button" class="mini-link" data-selectinvert="org">Invert</button>
+        </span>
+      </label>
+      <select id="fOrg" multiple></select>
+    </div>
+    <div class="filter-field">
+      <label>Module
+        <span class="label-actions">
+          <button type="button" class="mini-link" data-selectall="module">All</button>
+          <button type="button" class="mini-link" data-selectnone="module">None</button>
+          <button type="button" class="mini-link" data-selectinvert="module">Invert</button>
+        </span>
+      </label>
+      <select id="fModule" multiple></select>
+    </div>
+    <div class="filter-field narrow">
+      <label>In Scope</label>
+      <select id="fScope"></select>
+    </div>
+    <div class="filter-field grow">
+      <label>Search <span class="muted">(ID · name · description · module · systems · owners)</span></label>
+      <input type="text" id="fSearch" placeholder="Type to search…" autocomplete="off" />
+    </div>
+    <div class="filter-field narrow">
+      <label>&nbsp;</label>
+      <button id="clearFilters" class="btn btn-ghost full">Clear filters</button>
+    </div>
+    <div class="filter-meta">
+      <span id="activeChips" class="chips"></span>
+      <span id="resultCount" class="result-count"></span>
+    </div>
+  </section>
+
+  <!-- EXEC SUMMARY -->
+  <section id="sec-exec" class="block">
+    <h2 class="block-title">Executive Summary</h2>
+    <div id="execCards" class="cards exec"></div>
+  </section>
+
+  <!-- RICE TYPE CARDS + DONUTS -->
+  <section id="sec-types" class="block">
+    <h2 class="block-title">RICE Type Breakdown</h2>
+    <div id="typeCards" class="cards types"></div>
+  </section>
+
+  <!-- RAW OBJECT STATUS -->
+  <section id="sec-rawstatus" class="block">
+    <h2 class="block-title">Raw Object Status <span class="muted">— true values, no mapping</span></h2>
+    <div id="rawStatusCards" class="cards raw"></div>
+  </section>
+
+  <!-- STATUS MAPPING LEGEND -->
+  <section class="block">
+    <h2 class="block-title">Executive Status Mapping</h2>
+    <div id="mappingLegend" class="mapping-legend"></div>
+  </section>
+
+  <!-- SPRINT SUMMARY -->
+  <section id="sec-sprints" class="block">
+    <h2 class="block-title">Sprint &amp; Phase Summary <span class="muted">— delivery date → assigned phase</span></h2>
+    <div id="sprintSummary" class="sprint-grid"></div>
+  </section>
+
+  <!-- DELIVERY PLAN: GRID -->
+  <section id="sec-plan" class="block">
+    <div class="block-head">
+      <h2 class="block-title">Delivery Plan</h2>
+      <div class="seg" id="planToggle">
+        <button data-view="grid" class="active">Grid</button>
+        <button data-view="gantt">Gantt</button>
+      </div>
+    </div>
+    <div id="gridWrap">
+      <div id="riceGrid" class="ag-theme-quartz"></div>
+    </div>
+    <div id="ganttWrap" class="hidden">
+      <div class="gantt-legend">
+        <span><i class="g-diamond"></i> Spec complete</span>
+        <span><i class="g-bar"></i> Build</span>
+        <span><i class="g-dot"></i> Delivery</span>
+        <span class="muted">| Phase shading shown behind the timeline · current week highlighted</span>
+      </div>
+      <div id="ganttScroll" class="gantt-scroll"></div>
+    </div>
+  </section>
+
+  <!-- RESOURCE CAPACITY -->
+  <section id="sec-capacity" class="block">
+    <h2 class="block-title">Resource Capacity <span class="muted">— developers needed per week (⌈hours ÷ 45⌉)</span></h2>
+    <div id="capacityHeat" class="capacity-wrap"></div>
+  </section>
+
+  <!-- RISK -->
+  <section id="sec-risk" class="block">
+    <div class="risk-cols">
+      <div>
+        <h2 class="block-title">Lean Spec Risk</h2>
+        <div id="leanRisk" class="risk-list"></div>
+      </div>
+      <div>
+        <h2 class="block-title">Build Risk</h2>
+        <div id="buildRisk" class="risk-list"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MATRIX -->
+  <section id="sec-matrix" class="block">
+    <h2 class="block-title">Delivery Matrix <span class="muted">— click any cell to filter the grid</span></h2>
+    <h3 class="sub-title">RICE Type × Executive Status</h3>
+    <div id="matrixExec" class="matrix-wrap"></div>
+    <h3 class="sub-title">RICE Type × Raw Object Status</h3>
+    <div id="matrixRaw" class="matrix-wrap"></div>
+  </section>
+
+  <!-- DATA QUALITY -->
+  <section id="sec-dq" class="block">
+    <h2 class="block-title">Data Quality</h2>
+    <div id="dataQuality" class="dq-wrap"></div>
+  </section>
+
+  <footer class="foot">
+    <span id="footMeta"></span>
+    <button class="btn btn-ghost" id="reuploadBtn">Replace data file</button>
+  </footer>
+</main>
+
+<!-- Drilldown modal -->
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="modalTitle">Details</h3>
+      <button id="modalClose" class="btn btn-ghost">✕</button>
+    </div>
+    <div id="modalBody" class="modal-body"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<!-- Libraries -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/choices.js@10.2.0/public/assets/scripts/choices.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

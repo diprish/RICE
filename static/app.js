@@ -1,0 +1,913 @@
+/* ============================================================
+   RICE Delivery Tracker — client application
+   ============================================================ */
+"use strict";
+
+const STATUS_ORDER = ["Completed", "In Progress", "Not Started", "Delayed", "Blocked", "Other"];
+const STATUS_COLOR = {
+  "Completed": "#046A38", "In Progress": "#00A3E0", "Not Started": "#97999B",
+  "Delayed": "#ED8B00", "Blocked": "#DA291C", "Other": "#6E2585"
+};
+const TYPE_ORDER = ["Conversion", "Integration", "Report", "Extension"];
+const TYPE_COLOR = {
+  "Conversion": "#0097A9", "Integration": "#00A3E0", "Report": "#046A38",
+  "Extension": "#6E2585", "Unspecified": "#97999B"
+};
+const PHASE_FILL = {
+  "Sprint 1": "rgba(134,188,37,.16)", "Sprint 2": "rgba(0,163,224,.14)",
+  "Sprint 3": "rgba(110,37,133,.13)", "SIT 1": "rgba(237,139,0,.16)",
+  "SIT 2": "rgba(237,139,0,.16)", "UAT": "rgba(110,37,133,.20)",
+  "Cutover": "rgba(218,41,28,.16)", "Go-Live": "rgba(0,163,224,.20)"
+};
+
+const State = {
+  data: null,            // full payload
+  filtered: [],          // records after all filters
+  charts: {},            // donut chart instances by id
+  gridApi: null,
+  planView: "grid",
+  quick: {},             // transient quick-filters {rice_type, exec_status, object_status, assigned_sprint}
+  choices: {},
+  allOptions: { org: [], module: [] },  // full universe of values, for "Select all"
+};
+
+/* ---------------- helpers ---------------- */
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtNum = (n) => (n == null || isNaN(n)) ? "—" : Number(n).toLocaleString();
+const fmtDate = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(iso + "T00:00:00");
+  if (isNaN(d)) return "—";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" });
+};
+const parseISO = (iso) => iso ? new Date(iso + "T00:00:00") : null;
+const today = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
+const slug = (s) => String(s).replace(/[^a-zA-Z0-9]+/g, "");
+
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+document.addEventListener("DOMContentLoaded", () => {
+  initTheme();
+  initUpload();
+  initTopbar();
+  initFilters();
+  initPlanToggle();
+  initModal();
+  $("#exportBtn").addEventListener("click", exportCSV);
+  $("#reuploadBtn").addEventListener("click", () => {
+    $("#uploadScreen").classList.add("show");
+    $("#dashboard").classList.remove("show");
+    window.scrollTo(0, 0);
+  });
+
+  if ($("#dashboard").classList.contains("show")) loadData();
+});
+
+/* ---------------- theme ---------------- */
+function initTheme() {
+  const saved = (() => { try { return localStorage.getItem("rice-theme"); } catch { return null; } })();
+  if (saved) document.documentElement.setAttribute("data-theme", saved);
+  $("#themeBtn").addEventListener("click", () => {
+    const cur = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", cur);
+    try { localStorage.setItem("rice-theme", cur); } catch {}
+    if (State.data) { renderTypeCards(State.filtered); if (State.planView === "gantt") renderGantt(State.filtered); }
+  });
+}
+
+/* ---------------- topbar scroll-spy ---------------- */
+function initTopbar() {
+  const links = $$("#navlinks a");
+  const map = links.map(a => ({ a, el: $(a.getAttribute("href")) })).filter(x => x.el);
+  window.addEventListener("scroll", () => {
+    let cur = null;
+    for (const m of map) {
+      if (m.el.getBoundingClientRect().top <= 120) cur = m;
+    }
+    links.forEach(a => a.classList.remove("active"));
+    if (cur) cur.a.classList.add("active");
+  }, { passive: true });
+}
+
+/* ============================================================
+   UPLOAD
+   ============================================================ */
+function initUpload() {
+  const dz = $("#dropZone"), input = $("#fileInput");
+  $("#browseBtn").addEventListener("click", () => input.click());
+  input.addEventListener("change", () => { if (input.files[0]) uploadFile(input.files[0]); });
+  ["dragenter", "dragover"].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.add("drag");
+  }));
+  ["dragleave", "drop"].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.remove("drag");
+  }));
+  dz.addEventListener("drop", e => {
+    const f = e.dataTransfer.files[0]; if (f) uploadFile(f);
+  });
+}
+
+async function uploadFile(file) {
+  const msg = $("#uploadMsg");
+  msg.className = "upload-msg"; msg.textContent = "Uploading & validating…";
+  const fd = new FormData(); fd.append("file", file);
+  try {
+    const r = await fetch("/api/upload", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) { msg.className = "upload-msg err"; msg.textContent = j.message || "Upload failed."; return; }
+    msg.className = "upload-msg ok"; msg.textContent = "✓ Loaded. Opening dashboard…";
+    $("#uploadScreen").classList.remove("show");
+    $("#dashboard").classList.add("show");
+    await loadData();
+    window.scrollTo(0, 0);
+  } catch (e) {
+    msg.className = "upload-msg err"; msg.textContent = "Network error: " + e.message;
+  }
+}
+
+/* ============================================================
+   DATA LOAD
+   ============================================================ */
+async function loadData() {
+  try {
+    const r = await fetch("/api/data");
+    if (r.status === 404) {
+      $("#uploadScreen").classList.add("show");
+      $("#dashboard").classList.remove("show");
+      return;
+    }
+    const j = await r.json();
+    if (j.error) { toast("Error: " + j.message); return; }
+    State.data = j;
+    populateFilterOptions(j);
+    renderMappingLegend();
+    $("#footMeta").textContent =
+      `Source sheet: ${j.source_sheet} · ${j.record_count} objects · generated ${j.generated_at.replace("T", " ")}`;
+    $("#brandSub").textContent = `${j.summary.total_in_scope} in-scope of ${j.record_count} RICE objects`;
+    applyFilters();
+  } catch (e) {
+    toast("Failed to load data: " + e.message);
+  }
+}
+
+/* ============================================================
+   FILTERS
+   ============================================================ */
+function initFilters() {
+  State.choices.org = new Choices($("#fOrg"), {
+    removeItemButton: true, placeholderValue: "Click to add — or use All / None / Invert", shouldSort: false, searchEnabled: true
+  });
+  State.choices.module = new Choices($("#fModule"), {
+    removeItemButton: true, placeholderValue: "Click to add — or use All / None / Invert", shouldSort: false, searchEnabled: true
+  });
+  $("#fOrg").addEventListener("change", applyFilters);
+  $("#fModule").addEventListener("change", applyFilters);
+  $("#fScope").addEventListener("change", applyFilters);
+  let t;
+  $("#fSearch").addEventListener("input", () => { clearTimeout(t); t = setTimeout(applyFilters, 180); });
+  $("#clearFilters").addEventListener("click", clearAllFilters);
+
+  // "All" / "None" shortcuts for the multi-select filters.
+  $$("[data-selectall]").forEach(btn => btn.addEventListener("click", () => {
+    selectAllChoices(btn.getAttribute("data-selectall"));
+  }));
+  $$("[data-selectnone]").forEach(btn => btn.addEventListener("click", () => {
+    const which = btn.getAttribute("data-selectnone");
+    State.choices[which].removeActiveItems();
+    applyFilters();
+  }));
+  $$("[data-selectinvert]").forEach(btn => btn.addEventListener("click", () => {
+    invertChoices(btn.getAttribute("data-selectinvert"));
+  }));
+}
+
+function invertChoices(which) {
+  const all = (State.allOptions && State.allOptions[which]) || [];
+  const ch = State.choices[which];
+  if (!ch) return;
+  const selected = new Set(ch.getValue(true) || []);
+  const inverse = all.filter(v => !selected.has(v));
+  ch.removeActiveItems();
+  if (inverse.length && typeof ch.setChoiceByValue === "function") {
+    ch.setChoiceByValue(inverse);
+  }
+  applyFilters();
+}
+
+function selectAllChoices(which) {
+  const all = (State.allOptions && State.allOptions[which]) || [];
+  const ch = State.choices[which];
+  if (!ch) return;
+  // Reset then select every option, so the result is exactly the full set.
+  ch.removeActiveItems();
+  if (typeof ch.setChoiceByValue === "function") {
+    ch.setChoiceByValue(all);   // accepts an array of values
+  }
+  applyFilters();
+}
+
+function populateFilterOptions(j) {
+  const f = j.filters;
+  State.allOptions = { org: f.accountable_org.slice(), module: f.module.slice() };
+  State.choices.org.clearChoices();
+  State.choices.org.setChoices(f.accountable_org.map(v => ({ value: v, label: v })), "value", "label", true);
+  State.choices.module.clearChoices();
+  State.choices.module.setChoices(f.module.map(v => ({ value: v, label: v })), "value", "label", true);
+  const scope = $("#fScope");
+  scope.innerHTML = `<option value="">All</option>` + f.in_scope.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+}
+
+function getBaseFilters() {
+  return {
+    org: State.choices.org.getValue(true) || [],
+    module: State.choices.module.getValue(true) || [],
+    scope: $("#fScope").value,
+    search: $("#fSearch").value.trim().toLowerCase(),
+  };
+}
+
+function clearAllFilters() {
+  State.choices.org.removeActiveItems();
+  State.choices.module.removeActiveItems();
+  $("#fScope").value = "";
+  $("#fSearch").value = "";
+  State.quick = {};
+  applyFilters();
+}
+
+function setQuick(obj) {
+  State.quick = obj || {};
+  applyFilters();
+  document.getElementById("sec-plan").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+const SEARCH_FIELDS = ["rice_id", "object_name", "description", "module", "source_system", "target_system",
+  "functional_owner", "technical_owner", "rice_owner", "tech_spec_owner"];
+
+function applyFilters() {
+  if (!State.data) return;
+  const f = getBaseFilters();
+  const q = State.quick;
+  State.filtered = State.data.records.filter(r => {
+    if (f.org.length && !f.org.includes(r.accountable_org)) return false;
+    if (f.module.length && !f.module.includes(r.module)) return false;
+    if (f.scope && r.in_scope !== f.scope) return false;
+    if (f.search) {
+      const hay = SEARCH_FIELDS.map(k => r[k] || "").join(" ").toLowerCase();
+      if (!hay.includes(f.search)) return false;
+    }
+    if (q.rice_type && r.rice_type !== q.rice_type) return false;
+    if (q.exec_status && r.exec_status !== q.exec_status) return false;
+    if (q.object_status && r.object_status !== q.object_status) return false;
+    if (q.assigned_sprint && r.assigned_sprint !== q.assigned_sprint) return false;
+    return true;
+  });
+  renderChips(f);
+  $("#resultCount").textContent = `${State.filtered.length} of ${State.data.record_count} objects`;
+  renderAll(State.filtered);
+}
+
+function renderChips(f) {
+  const chips = [];
+  f.org.forEach(v => chips.push(["Org", v, () => removeChoice("org", v)]));
+  f.module.forEach(v => chips.push(["Module", v, () => removeChoice("module", v)]));
+  if (f.scope) chips.push(["In Scope", f.scope, () => { $("#fScope").value = ""; applyFilters(); }]);
+  if (f.search) chips.push(["Search", `"${f.search}"`, () => { $("#fSearch").value = ""; applyFilters(); }]);
+  Object.entries(State.quick).forEach(([k, v]) => {
+    if (v) chips.push([k.replace("_", " "), v, () => { delete State.quick[k]; applyFilters(); }]);
+  });
+  const wrap = $("#activeChips");
+  wrap.innerHTML = chips.map((_, i) => `<span class="chip" data-i="${i}"><b>${esc(chips[i][0])}:</b> ${esc(chips[i][1])} <span class="x">✕</span></span>`).join("");
+  $$(".chip .x", wrap).forEach((x, i) => x.addEventListener("click", () => chips[i][2]()));
+}
+function removeChoice(which, value) {
+  State.choices[which].removeActiveItemsByValue(value);
+  applyFilters();
+}
+
+/* ============================================================
+   RENDER ALL
+   ============================================================ */
+function renderAll(recs) {
+  renderExecCards(recs);
+  renderTypeCards(recs);
+  renderRawStatus(recs);
+  renderSprintSummary(recs);
+  renderGrid(recs);
+  if (State.planView === "gantt") renderGantt(recs);
+  renderCapacity(recs);
+  renderRisk(recs);
+  renderMatrix(recs);
+  renderDataQuality(recs);
+}
+
+/* ---------- counting helpers ---------- */
+function countBy(recs, key) {
+  const m = {};
+  recs.forEach(r => { const v = r[key] || "—"; m[v] = (m[v] || 0) + 1; });
+  return m;
+}
+function typeBreakdown(recs) {
+  const m = {};
+  recs.forEach(r => { m[r.rice_type] = (m[r.rice_type] || 0) + 1; });
+  return m;
+}
+
+/* ============================================================
+   EXEC SUMMARY CARDS
+   ============================================================ */
+function renderExecCards(recs) {
+  const cards = [
+    { key: null, label: "Total Objects", cls: "total" },
+    { key: "Completed", label: "Completed", cls: "completed" },
+    { key: "In Progress", label: "In Progress", cls: "progress" },
+    { key: "Not Started", label: "Not Started", cls: "notstarted" },
+    { key: "__delayblock", label: "Delayed / Blocked", cls: "delayed" },
+  ];
+  const html = cards.map(c => {
+    let subset;
+    if (c.key === null) subset = recs;
+    else if (c.key === "__delayblock") subset = recs.filter(r => r.exec_status === "Delayed" || r.exec_status === "Blocked");
+    else subset = recs.filter(r => r.exec_status === c.key);
+    const bd = typeBreakdown(subset);
+    const breaks = TYPE_ORDER.filter(t => bd[t]).map(t =>
+      `<span>${t}<b>${bd[t]}</b></span>`).join("") || `<span class="muted">none</span>`;
+    const clickAttr = c.key && c.key !== "__delayblock" ? `data-status="${c.key}"` : (c.key === "__delayblock" ? `data-status="Delayed"` : "");
+    return `<div class="card ${c.cls} ${clickAttr ? "clickable" : ""}" ${clickAttr}>
+      <div class="card-label">${c.label}</div>
+      <div class="card-value">${subset.length}</div>
+      <div class="card-break">${breaks}</div>
+    </div>`;
+  }).join("");
+  const el = $("#execCards"); el.innerHTML = html;
+  $$(".card.clickable", el).forEach(card => card.addEventListener("click", () =>
+    setQuick({ exec_status: card.dataset.status })));
+}
+
+/* ============================================================
+   RICE TYPE CARDS + DONUTS
+   ============================================================ */
+function renderTypeCards(recs) {
+  const types = TYPE_ORDER.concat(
+    [...new Set(recs.map(r => r.rice_type))].filter(t => !TYPE_ORDER.includes(t))
+  ).filter(t => recs.some(r => r.rice_type === t));
+
+  const el = $("#typeCards");
+  el.innerHTML = types.map(t => {
+    const id = "donut_" + slug(t);
+    return `<div class="card">
+      <div class="type-card">
+        <div class="tc-stats" id="stats_${slug(t)}"></div>
+        <div class="donut-wrap"><canvas id="${id}"></canvas>
+          <div class="donut-center" id="center_${slug(t)}"></div>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+
+  types.forEach(t => {
+    const subset = recs.filter(r => r.rice_type === t);
+    const sc = countByExec(subset);
+    const total = subset.length;
+    const completed = sc["Completed"] || 0;
+    const pct = total ? Math.round(100 * completed / total) : 0;
+
+    $("#stats_" + slug(t)).innerHTML =
+      `<div class="tc-name">${esc(t)} <span class="muted">(${total})</span></div>` +
+      STATUS_ORDER.map(s => sc[s] ? `<div class="tc-row"><span>${s}</span><b style="color:${STATUS_COLOR[s]}">${sc[s]}</b></div>` : "").join("");
+    $("#center_" + slug(t)).innerHTML = `<div><b>${pct}%</b><small>complete</small></div>`;
+
+    const ctx = $("#donut_" + slug(t));
+    if (State.charts[t]) State.charts[t].destroy();
+    const labels = STATUS_ORDER.filter(s => sc[s]);
+    State.charts[t] = new Chart(ctx, {
+      type: "doughnut",
+      data: {
+        labels,
+        datasets: [{
+          data: labels.map(s => sc[s]),
+          backgroundColor: labels.map(s => STATUS_COLOR[s]),
+          borderWidth: 2,
+          borderColor: getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#fff",
+        }],
+      },
+      options: {
+        cutout: "70%", responsive: true, maintainAspectRatio: true,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => ` ${c.label}: ${c.raw}` } } },
+      },
+    });
+  });
+}
+function countByExec(recs) {
+  const m = {}; recs.forEach(r => m[r.exec_status] = (m[r.exec_status] || 0) + 1); return m;
+}
+
+/* ============================================================
+   RAW OBJECT STATUS
+   ============================================================ */
+function renderRawStatus(recs) {
+  const statuses = [...new Set(recs.map(r => r.object_status || "—"))].sort();
+  const el = $("#rawStatusCards");
+  el.innerHTML = statuses.map(s => {
+    const subset = recs.filter(r => (r.object_status || "—") === s);
+    const bd = typeBreakdown(subset);
+    const breaks = TYPE_ORDER.filter(t => bd[t]).map(t => `<span>${t}<b>${bd[t]}</b></span>`).join("")
+      || `<span class="muted">none</span>`;
+    const real = s !== "—";
+    return `<div class="card ${real ? "clickable" : ""}" ${real ? `data-raw="${esc(s)}"` : ""}>
+      <div class="card-label">${esc(s)}</div>
+      <div class="card-value">${subset.length}</div>
+      <div class="card-break">${breaks}</div>
+    </div>`;
+  }).join("");
+  $$(".card.clickable", el).forEach(c => c.addEventListener("click", () => setQuick({ object_status: c.dataset.raw })));
+}
+
+/* ============================================================
+   MAPPING LEGEND (static)
+   ============================================================ */
+function renderMappingLegend() {
+  const rows = [
+    ["contains \"block\"", "Blocked"], ["contains \"delay\"", "Delayed"],
+    ["contains \"complete\" / \"done\"", "Completed"],
+    ["contains \"progress\"/\"draft\"/\"FUT\"/\"review\"", "In Progress"],
+    ["empty / \"not started\"", "Not Started"], ["anything else", "Other"],
+  ];
+  $("#mappingLegend").innerHTML = rows.map(([rule, out]) =>
+    `<div class="map-row"><span class="map-dot" style="background:${STATUS_COLOR[out]}"></span>
+      <code>${esc(rule)}</code><span class="arrow">→</span><b style="color:${STATUS_COLOR[out]}">${out}</b></div>`).join("");
+}
+
+/* ============================================================
+   SPRINT SUMMARY
+   ============================================================ */
+function renderSprintSummary(recs) {
+  const phases = State.data.timeline.slice();
+  const groups = {};
+  phases.forEach(p => groups[p.name] = []);
+  groups["Unscheduled"] = [];
+  recs.forEach(r => { (groups[r.assigned_sprint] || groups["Unscheduled"]).push(r); });
+
+  const cards = phases.concat([{ name: "Unscheduled", type: "Unscheduled", status: "—", start: null, end: null }]);
+  $("#sprintSummary").innerHTML = cards.map(p => {
+    const list = groups[p.name] || [];
+    const sc = countByExec(list);
+    const seg = STATUS_ORDER.filter(s => sc[s]).map(s =>
+      `<i style="width:${(100 * sc[s] / (list.length || 1)).toFixed(1)}%;background:${STATUS_COLOR[s]}" title="${s}: ${sc[s]}"></i>`).join("");
+    const breaks = STATUS_ORDER.filter(s => sc[s]).map(s =>
+      `<span>${s}<b> ${sc[s]}</b></span>`).join("") || `<span class="muted">no objects</span>`;
+    const dates = p.start ? `${fmtDate(p.start)} – ${fmtDate(p.end)}` : "Not date-assigned";
+    return `<div class="sprint-card phase-${esc(p.type)}" data-sprint="${esc(p.name)}">
+      <div class="sprint-head"><h3>${esc(p.name)}</h3><span class="sprint-status">${esc(p.status)}</span></div>
+      <div class="sprint-dates">${dates}</div>
+      <div class="sprint-count">${list.length}</div>
+      <div class="sprint-bar">${seg}</div>
+      <div class="sprint-breaks">${breaks}</div>
+    </div>`;
+  }).join("");
+  $$(".sprint-card", $("#sprintSummary")).forEach(c =>
+    c.addEventListener("click", () => setQuick({ assigned_sprint: c.dataset.sprint })));
+}
+
+/* ============================================================
+   AG GRID (Delivery Plan)
+   ============================================================ */
+function riceBadge(p) { return `<span class="rice-badge rice-${slug(p.value)}">${esc(p.value)}</span>`; }
+function statusPill(p) {
+  const v = p.value || "—";
+  return `<span class="st-pill" style="background:${STATUS_COLOR[v] || "#97999B"}">${esc(v)}</span>`;
+}
+function pctRenderer(p) {
+  if (p.value == null) return `<span class="muted">—</span>`;
+  return `${Math.round(p.value)}%`;
+}
+
+function gridColumns() {
+  return [
+    { headerName: "RICE ID", field: "rice_id", pinned: "left", width: 130, cellClass: "cell-obj" },
+    {
+      headerName: "Object Name", field: "object_name", pinned: "left", width: 230, cellClass: "cell-obj",
+      tooltipField: "description"
+    },
+    { headerName: "Type", field: "rice_type", pinned: "left", width: 110, cellRenderer: riceBadge },
+    { headerName: "Design Sprint", field: "design_sprint", pinned: "left", width: 120, cellClass: "crumb" },
+    { headerName: "Dev Sprint", field: "dev_sprint", pinned: "left", width: 130, cellClass: "crumb",
+      valueFormatter: p => (p.value || "").replace(/\n/g, " → ") },
+    { headerName: "Complexity", field: "complexity", pinned: "left", width: 105 },
+    { headerName: "Build Hrs", field: "build_hours", pinned: "left", width: 95, type: "numericColumn",
+      valueFormatter: p => p.value == null ? "—" : fmtNum(p.value) },
+    { headerName: "Functional Owner", field: "functional_owner", pinned: "left", width: 160 },
+    // scrolling columns
+    { headerName: "Exec Status", field: "exec_status", width: 130, cellRenderer: statusPill },
+    { headerName: "Object Status", field: "object_status", width: 150 },
+    { headerName: "Module", field: "module", width: 110 },
+    { headerName: "Workstream", field: "workstream", width: 120 },
+    { headerName: "Accountable Org", field: "accountable_org", width: 130 },
+    { headerName: "In Scope", field: "in_scope", width: 100 },
+    { headerName: "Technical Owner", field: "technical_owner", width: 150 },
+    { headerName: "Spec %", field: "spec_pct", width: 90, cellRenderer: pctRenderer },
+    { headerName: "Dev %", field: "dev_pct", width: 90, cellRenderer: pctRenderer },
+    { headerName: "Hrs Used", field: "hours_consumed", width: 100, type: "numericColumn",
+      valueFormatter: p => p.value == null ? "—" : fmtNum(p.value) },
+    { headerName: "Hrs Left", field: "hours_left", width: 100, type: "numericColumn",
+      valueFormatter: p => p.value == null ? "—" : fmtNum(p.value) },
+    { headerName: "Spec Plan", field: "spec_effective", width: 110, valueFormatter: p => fmtDate(p.value) },
+    { headerName: "Spec Actual", field: "spec_actual", width: 110, valueFormatter: p => fmtDate(p.value) },
+    { headerName: "Delivery", field: "delivery_date", width: 110, valueFormatter: p => fmtDate(p.value) },
+    { headerName: "Assigned Sprint", field: "assigned_sprint", width: 140 },
+    { headerName: "Source", field: "source_system", width: 150 },
+    { headerName: "Target", field: "target_system", width: 150 },
+  ];
+}
+
+function renderGrid(recs) {
+  if (!State.gridApi) {
+    const options = {
+      columnDefs: gridColumns(),
+      rowData: recs,
+      defaultColDef: { sortable: true, resizable: true, filter: true, suppressMovable: false },
+      enableCellTextSelection: true,
+      tooltipShowDelay: 300,
+      animateRows: false,
+      rowHeight: 34,
+    };
+    State.gridApi = agGrid.createGrid($("#riceGrid"), options);
+  } else {
+    State.gridApi.setGridOption("rowData", recs);
+  }
+}
+
+function initPlanToggle() {
+  $$("#planToggle button").forEach(b => b.addEventListener("click", () => {
+    $$("#planToggle button").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    State.planView = b.dataset.view;
+    if (State.planView === "grid") {
+      $("#gridWrap").classList.remove("hidden"); $("#ganttWrap").classList.add("hidden");
+    } else {
+      $("#ganttWrap").classList.remove("hidden"); $("#gridWrap").classList.add("hidden");
+      renderGantt(State.filtered);
+    }
+  }));
+}
+
+/* ============================================================
+   GANTT  (signature visual)
+   ============================================================ */
+function renderGantt(recs) {
+  const rows = recs.filter(r => r.gantt_start && r.gantt_delivery)
+    .sort((a, b) => parseISO(a.gantt_start) - parseISO(b.gantt_start));
+  const wrap = $("#ganttScroll");
+  if (!rows.length) { wrap.innerHTML = `<div class="risk-empty">No objects with scheduling dates in the current filter.</div>`; return; }
+
+  const tl = State.data.timeline;
+  let minD = parseISO(tl[0].start), maxD = parseISO(tl[tl.length - 1].end);
+  rows.forEach(r => {
+    const s = parseISO(r.gantt_start), d = parseISO(r.gantt_delivery), sp = parseISO(r.gantt_spec);
+    [s, d, sp].forEach(x => { if (x && x < minD) minD = x; if (x && x > maxD) maxD = x; });
+  });
+  // pad a week each side
+  minD = new Date(minD.getTime() - 6 * 864e5); maxD = new Date(maxD.getTime() + 6 * 864e5);
+  const span = maxD - minD;
+  const LABEL_W = 240, ROW_H = 26, TOP = 46, PX_W = 1180;
+  const x = (d) => LABEL_W + ((d - minD) / span) * PX_W;
+  const H = TOP + rows.length * ROW_H + 12;
+  const W = LABEL_W + PX_W + 20;
+
+  // phase shading rects + labels
+  let bg = "", axis = "";
+  tl.forEach(p => {
+    const ps = parseISO(p.start), pe = parseISO(p.end);
+    const x1 = x(ps), x2 = Math.max(x(pe), x1 + 2);
+    bg += `<rect x="${x1}" y="${TOP}" width="${x2 - x1}" height="${rows.length * ROW_H}" fill="${PHASE_FILL[p.name] || "rgba(0,0,0,.03)"}"/>`;
+    axis += `<text x="${(x1 + x2) / 2}" y="30" text-anchor="middle" font-size="11" font-weight="700" fill="var(--text-2)">${esc(p.name)}</text>`;
+    axis += `<line x1="${x1}" y1="${TOP}" x2="${x1}" y2="${H - 12}" stroke="var(--border)" stroke-dasharray="3 3"/>`;
+  });
+  // month gridlines
+  let m = new Date(minD.getFullYear(), minD.getMonth(), 1);
+  while (m < maxD) {
+    const mx = x(m);
+    if (mx > LABEL_W) {
+      axis += `<line x1="${mx}" y1="${TOP - 6}" x2="${mx}" y2="${H - 12}" stroke="var(--border)" opacity=".6"/>`;
+      axis += `<text x="${mx + 3}" y="${TOP - 9}" font-size="9.5" fill="var(--muted)">${m.toLocaleDateString(undefined, { month: "short", year: "2-digit" })}</text>`;
+    }
+    m = new Date(m.getFullYear(), m.getMonth() + 1, 1);
+  }
+  // current week overlay
+  const t0 = today();
+  const cwStart = new Date(t0); cwStart.setDate(t0.getDate() - ((t0.getDay() + 6) % 7));
+  const cwEnd = new Date(cwStart.getTime() + 7 * 864e5);
+  if (cwEnd > minD && cwStart < maxD) {
+    const cx1 = x(cwStart < minD ? minD : cwStart), cx2 = x(cwEnd > maxD ? maxD : cwEnd);
+    bg += `<rect x="${cx1}" y="${TOP}" width="${Math.max(cx2 - cx1, 3)}" height="${rows.length * ROW_H}" fill="var(--ph-current)"/>`;
+    axis += `<text x="${cx1 + 2}" y="${TOP - 22}" font-size="9" font-weight="700" fill="var(--dl-orange)">now</text>`;
+  }
+
+  // bars
+  let bars = "";
+  rows.forEach((r, i) => {
+    const y = TOP + i * ROW_H, cy = y + ROW_H / 2;
+    const xs = x(parseISO(r.gantt_start)), xd = x(parseISO(r.gantt_delivery));
+    const barColor = STATUS_COLOR[r.exec_status] || "#00A3E0";
+    if (i % 2 === 0) bars += `<rect x="${LABEL_W}" y="${y}" width="${PX_W + 20}" height="${ROW_H}" fill="var(--surface-2)" opacity=".5"/>`;
+    // label
+    const nm = (r.object_name || "").length > 30 ? r.object_name.slice(0, 29) + "…" : r.object_name;
+    bars += `<text x="8" y="${cy - 3}" font-size="10.5" font-weight="700" fill="var(--text)">${esc(r.rice_id)}</text>`;
+    bars += `<text x="8" y="${cy + 9}" font-size="9.5" fill="var(--text-2)">${esc(nm)}</text>`;
+    // build bar
+    bars += `<rect x="${xs}" y="${cy - 4}" width="${Math.max(xd - xs, 2)}" height="8" rx="3" fill="${barColor}" opacity="${r.gantt_delivery_estimated ? .5 : .9}">
+      <title>${esc(r.rice_id)} — build ${fmtDate(r.gantt_start)} → ${fmtDate(r.gantt_delivery)}${r.gantt_delivery_estimated ? " (est)" : ""}</title></rect>`;
+    // spec diamond
+    if (r.gantt_spec) {
+      const sx = x(parseISO(r.gantt_spec));
+      bars += `<rect x="${sx - 5}" y="${cy - 5}" width="10" height="10" transform="rotate(45 ${sx} ${cy})" fill="#046A38"><title>Spec complete ${fmtDate(r.gantt_spec)}</title></rect>`;
+    }
+    // delivery dot
+    bars += `<circle cx="${xd}" cy="${cy}" r="5" fill="#ED8B00" stroke="var(--surface)" stroke-width="1.5"><title>Delivery ${fmtDate(r.gantt_delivery)}</title></circle>`;
+  });
+  // frozen label backdrop
+  const labelBg = `<rect x="0" y="0" width="${LABEL_W}" height="${H}" fill="var(--surface)"/>
+    <line x1="${LABEL_W}" y1="0" x2="${LABEL_W}" y2="${H}" stroke="var(--border-2)"/>`;
+
+  wrap.innerHTML =
+    `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="display:block">
+      ${bg}${axis}
+      <g>${bars}</g>
+      ${labelBg}
+      <g>${rows.map((r, i) => {
+        const cy = TOP + i * ROW_H + ROW_H / 2;
+        const nm = (r.object_name || "").length > 30 ? r.object_name.slice(0, 29) + "…" : r.object_name;
+        return `<text x="8" y="${cy - 3}" font-size="10.5" font-weight="700" fill="var(--text)">${esc(r.rice_id)}</text>
+                <text x="8" y="${cy + 9}" font-size="9.5" fill="var(--text-2)">${esc(nm)}</text>`;
+      }).join("")}</g>
+    </svg>`;
+}
+
+/* ============================================================
+   RESOURCE CAPACITY HEATMAP
+   ============================================================ */
+function weekKey(d) {
+  const x = new Date(d); x.setHours(0, 0, 0, 0);
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); // Monday
+  return x.toISOString().slice(0, 10);
+}
+function renderCapacity(recs) {
+  const HPW = State.data.hours_per_dev_week || 45;
+  const tl = State.data.timeline;
+  let minD = parseISO(tl[0].start), maxD = parseISO(tl[tl.length - 1].end);
+
+  // build per-week, per-type hours
+  const data = {}; // weekKey -> {type -> {hours, objs[]}}
+  const addHours = (wk, type, hrs, obj) => {
+    data[wk] = data[wk] || {};
+    data[wk][type] = data[wk][type] || { hours: 0, objs: [] };
+    data[wk][type].hours += hrs;
+    if (!data[wk][type].objs.includes(obj)) data[wk][type].objs.push(obj);
+  };
+
+  recs.forEach(r => {
+    if (!r.build_hours || !r.gantt_start || !r.gantt_delivery) return;
+    const s = parseISO(r.gantt_start), d = parseISO(r.gantt_delivery);
+    if (s < minD) minD = s; if (d > maxD) maxD = d;
+    const weeks = [];
+    let w = new Date(s); w.setDate(w.getDate() - ((w.getDay() + 6) % 7));
+    while (w <= d) { weeks.push(weekKey(w)); w = new Date(w.getTime() + 7 * 864e5); }
+    if (!weeks.length) weeks.push(weekKey(s));
+    const per = r.build_hours / weeks.length;
+    weeks.forEach(wk => addHours(wk, r.rice_type, per, r.rice_id));
+  });
+
+  // week column list
+  const cols = [];
+  let w = new Date(minD); w.setDate(w.getDate() - ((w.getDay() + 6) % 7));
+  while (w <= maxD) { cols.push(weekKey(w)); w = new Date(w.getTime() + 7 * 864e5); }
+  const curWk = weekKey(today());
+
+  const phaseOf = (wk) => {
+    const d = parseISO(wk);
+    for (const p of tl) { if (parseISO(p.start) <= d && d <= parseISO(p.end)) return p.name; }
+    return null;
+  };
+
+  const rowsTypes = TYPE_ORDER.filter(t => recs.some(r => r.rice_type === t));
+  const cls = (dev) => dev === 0 ? "heat-0" : dev <= 2 ? "heat-low" : dev <= 4 ? "heat-mid" : "heat-high";
+
+  let head = `<tr><th class="lbl">RICE Type \\ Week</th>` + cols.map(c => {
+    const ph = phaseOf(c);
+    const bg = ph ? PHASE_FILL[ph] : "";
+    const mark = c === curWk ? ` style="background:var(--ph-current)"` : (bg ? ` style="background:${bg}"` : "");
+    return `<th${mark} title="${ph || "—"}">${fmtDate(c)}</th>`;
+  }).join("") + `</tr>`;
+
+  const typeRow = (type) => {
+    let tds = "";
+    cols.forEach(c => {
+      const cell = (data[c] && data[c][type]) || { hours: 0, objs: [] };
+      const dev = Math.ceil(cell.hours / HPW);
+      tds += `<td class="heat-cell ${cls(dev)}" data-wk="${c}" data-type="${type}" title="${Math.round(cell.hours)} hrs · ${cell.objs.length} objects">${dev || ""}</td>`;
+    });
+    return `<tr><td class="lbl">${esc(type)}</td>${tds}</tr>`;
+  };
+
+  const totalRow = () => {
+    let tds = "";
+    cols.forEach(c => {
+      let hrs = 0, objs = [];
+      Object.values(data[c] || {}).forEach(o => { hrs += o.hours; objs = objs.concat(o.objs); });
+      const dev = Math.ceil(hrs / HPW);
+      tds += `<td class="heat-cell ${cls(dev)}" data-wk="${c}" data-type="" title="${Math.round(hrs)} hrs · ${new Set(objs).size} objects"><b>${dev || ""}</b></td>`;
+    });
+    return `<tr style="font-weight:800"><td class="lbl">All Types</td>${tds}</tr>`;
+  };
+
+  $("#capacityHeat").innerHTML =
+    `<div class="cap-legend">
+       <span><i style="background:var(--surface);border:1px solid var(--border)"></i> 0</span>
+       <span><i style="background:rgba(134,188,37,.45)"></i> 1–2</span>
+       <span><i style="background:rgba(237,139,0,.55)"></i> 3–4</span>
+       <span><i style="background:rgba(218,41,28,.6)"></i> 5+</span>
+       <span class="muted">developers needed = ⌈weekly build hours ÷ ${HPW}⌉ · click a cell for objects</span>
+     </div>
+     <table class="heat"><thead>${head}</thead>
+       <tbody>${rowsTypes.map(typeRow).join("")}${totalRow()}</tbody></table>`;
+
+  $$(".heat-cell", $("#capacityHeat")).forEach(td => td.addEventListener("click", () => {
+    const wk = td.dataset.wk, type = td.dataset.type;
+    const cell = type ? (data[wk] && data[wk][type]) : null;
+    let ids;
+    if (type) ids = cell ? cell.objs : [];
+    else { ids = []; Object.values(data[wk] || {}).forEach(o => ids = ids.concat(o.objs)); ids = [...new Set(ids)]; }
+    const list = recs.filter(r => ids.includes(r.rice_id));
+    openModal(`Week of ${fmtDate(wk)}${type ? " · " + type : ""} — ${list.length} objects`, list);
+  }));
+}
+
+/* ============================================================
+   RISK
+   ============================================================ */
+function renderRisk(recs) {
+  const lean = recs.filter(r => r.lean_spec_risk);
+  const build = recs.filter(r => r.build_risk);
+  $("#leanRisk").innerHTML = riskItems(lean, "spec");
+  $("#buildRisk").innerHTML = riskItems(build, "build");
+  $$("#leanRisk .risk-item, #buildRisk .risk-item").forEach(el =>
+    el.addEventListener("click", () => {
+      const r = recs.find(x => x.rice_id === el.dataset.id);
+      if (r) openModal(r.rice_id + " — " + r.object_name, [r], true);
+    }));
+}
+function riskItems(list, kind) {
+  if (!list.length) return `<div class="risk-empty">No objects flagged. ✓</div>`;
+  return list.sort((a, b) => {
+    const da = parseISO(kind === "spec" ? a.spec_effective : a.delivery_date) || new Date(8640e12);
+    const db = parseISO(kind === "spec" ? b.spec_effective : b.delivery_date) || new Date(8640e12);
+    return da - db;
+  }).map(r => {
+    const blocked = r.exec_status === "Blocked";
+    const date = kind === "spec" ? r.spec_effective : r.delivery_date;
+    const stat = kind === "spec" ? (r.fspec_status || r.exec_status) : (r.dev_status || r.exec_status);
+    const pct = kind === "spec" ? r.spec_pct : r.dev_pct;
+    return `<div class="risk-item ${blocked ? "blocked" : ""}" data-id="${esc(r.rice_id)}">
+      <div class="ri-top"><span class="ri-name">${esc(r.object_name)}</span>
+        <span class="st-pill" style="background:${STATUS_COLOR[r.exec_status]}">${r.exec_status}</span></div>
+      <div class="ri-meta">
+        <span class="ri-id">${esc(r.rice_id)}</span>
+        <span>${esc(r.rice_type)}</span>
+        <span>${kind === "spec" ? "Spec" : "Delivery"}: ${fmtDate(date)}</span>
+        <span>${esc(stat)}${pct != null ? " · " + Math.round(pct) + "%" : ""}</span>
+        <span>${esc(r.functional_owner || r.technical_owner || "—")}</span>
+      </div></div>`;
+  }).join("");
+}
+
+/* ============================================================
+   MATRIX
+   ============================================================ */
+function renderMatrix(recs) {
+  const types = TYPE_ORDER.filter(t => recs.some(r => r.rice_type === t))
+    .concat([...new Set(recs.map(r => r.rice_type))].filter(t => !TYPE_ORDER.includes(t)));
+  buildMatrix($("#matrixExec"), recs, types, STATUS_ORDER, "exec_status");
+  const rawStatuses = [...new Set(recs.map(r => r.object_status).filter(Boolean))].sort();
+  buildMatrix($("#matrixRaw"), recs, types, rawStatuses, "object_status");
+}
+function buildMatrix(container, recs, rows, cols, field) {
+  const count = (t, c) => recs.filter(r => r.rice_type === t && r[field] === c).length;
+  let head = `<tr><th class="lbl">RICE Type</th>` +
+    cols.map(c => `<th>${esc(c)}</th>`).join("") + `<th class="total-col">Total</th></tr>`;
+  let body = rows.map(t => {
+    let rowTotal = 0;
+    const tds = cols.map(c => {
+      const n = count(t, c); rowTotal += n;
+      const color = field === "exec_status" ? STATUS_COLOR[c] : "";
+      return n ? `<td class="cell" data-type="${esc(t)}" data-col="${esc(c)}" data-field="${field}" style="${color ? `color:${color}` : ""}">${n}</td>`
+        : `<td class="zero">·</td>`;
+    }).join("");
+    return `<tr><td class="lbl"><span class="rice-badge rice-${slug(t)}">${esc(t)}</span></td>${tds}<td class="total-col">${rowTotal}</td></tr>`;
+  }).join("");
+  // totals row
+  const totals = cols.map(c => recs.filter(r => r[field] === c).length);
+  body += `<tr class="total-row"><td class="lbl">Total</td>${totals.map(n => `<td>${n}</td>`).join("")}<td class="total-col">${recs.length}</td></tr>`;
+  container.innerHTML = `<table class="matrix"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  $$(".cell", container).forEach(td => td.addEventListener("click", () => {
+    const q = { rice_type: td.dataset.type };
+    q[td.dataset.field] = td.dataset.col;
+    setQuick(q);
+  }));
+}
+
+/* ============================================================
+   DATA QUALITY (recomputed on filtered set)
+   ============================================================ */
+function renderDataQuality(recs) {
+  const total = recs.length || 1;
+  const checks = {
+    "Sprint": r => !r.design_sprint && !r.dev_sprint,
+    "Spec Date": r => !(r.spec_planned || r.spec_revised || r.spec_actual),
+    "Build Hours": r => r.build_hours == null,
+    "Delivery Date": r => !(r.build_planned || r.build_actual || r.delivery_date),
+    "Functional Owner": r => !r.functional_owner,
+    "Object Status": r => !r.object_status,
+    "RICE Type": r => !r.rice_type || r.rice_type === "Unspecified",
+    "Module": r => !r.module,
+  };
+  const items = Object.entries(checks).map(([field, fn]) => {
+    const miss = recs.filter(fn).length;
+    return { field, miss, pct: Math.round(1000 * miss / total) / 10 };
+  });
+  $("#dataQuality").innerHTML = items.map(it =>
+    `<div class="dq-item">
+      <div class="dq-top"><span class="dq-field">${it.field}</span>
+        <span class="dq-pct" style="color:${it.pct > 40 ? "var(--dl-red)" : it.pct > 15 ? "var(--dl-orange)" : "var(--dl-green-dark)"}">${it.pct}%</span></div>
+      <div class="dq-bar"><i style="width:${it.pct}%;background:${it.pct > 40 ? "var(--dl-red)" : it.pct > 15 ? "var(--dl-orange)" : "var(--dl-green)"}"></i></div>
+      <div class="dq-sub">${it.miss} of ${total} objects missing</div>
+    </div>`).join("");
+}
+
+/* ============================================================
+   MODAL
+   ============================================================ */
+function initModal() {
+  $("#modalClose").addEventListener("click", closeModal);
+  $("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeModal(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+}
+function openModal(title, list, detailed) {
+  $("#modalTitle").textContent = title;
+  if (detailed && list.length === 1) {
+    const r = list[0];
+    const f = (k, v) => `<div class="mi"><b>${k}</b> ${esc(v == null || v === "" ? "—" : v)}</div>`;
+    $("#modalBody").innerHTML = `<div class="modal-list">
+      ${f("Type", r.rice_type)} ${f("Module", r.module)} ${f("Workstream", r.workstream)}
+      ${f("Exec Status", r.exec_status)} ${f("Object Status", r.object_status)}
+      ${f("Description", r.description)}
+      ${f("Functional Owner", r.functional_owner)} ${f("Technical Owner", r.technical_owner)}
+      ${f("Complexity", r.complexity)} ${f("Build Hours", r.build_hours)}
+      ${f("Spec %", r.spec_pct)} ${f("Dev %", r.dev_pct)}
+      ${f("Spec (planned)", fmtDate(r.spec_effective))} ${f("Spec (actual)", fmtDate(r.spec_actual))}
+      ${f("Delivery", fmtDate(r.delivery_date))} ${f("Assigned Sprint", r.assigned_sprint)}
+      ${f("Source → Target", (r.source_system || "—") + " → " + (r.target_system || "—"))}
+      ${r.comments ? f("Comments", r.comments) : ""}
+    </div>`;
+  } else if (list.length) {
+    $("#modalBody").innerHTML = `<div class="modal-list">` + list.map(r =>
+      `<div class="mi"><b>${esc(r.rice_id)}</b> ${esc(r.object_name)} —
+        <span class="st-pill" style="background:${STATUS_COLOR[r.exec_status]};font-size:10px">${r.exec_status}</span>
+        <span class="muted"> ${esc(r.rice_type)} · ${r.build_hours == null ? "—" : r.build_hours + " hrs"} · ${esc(r.functional_owner || "no owner")}</span></div>`
+    ).join("") + `</div>`;
+  } else {
+    $("#modalBody").innerHTML = `<div class="risk-empty">No objects.</div>`;
+  }
+  $("#modal").classList.remove("hidden");
+}
+function closeModal() { $("#modal").classList.add("hidden"); }
+
+/* ============================================================
+   CSV EXPORT (filtered set)
+   ============================================================ */
+function exportCSV() {
+  const recs = State.filtered;
+  if (!recs.length) { toast("Nothing to export."); return; }
+  const cols = ["rice_id", "rice_type", "object_name", "module", "workstream", "accountable_org", "in_scope",
+    "object_status", "exec_status", "complexity", "build_hours", "spec_pct", "dev_pct",
+    "hours_consumed", "hours_left", "functional_owner", "technical_owner", "design_sprint", "dev_sprint",
+    "spec_effective", "spec_actual", "delivery_date", "assigned_sprint", "lean_spec_risk", "build_risk",
+    "source_system", "target_system"];
+  const head = cols.join(",");
+  const esc2 = v => { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v; };
+  const lines = recs.map(r => cols.map(c => esc2(r[c])).join(","));
+  const blob = new Blob([head + "\n" + lines.join("\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "rice_tracker_filtered.csv";
+  a.click(); URL.revokeObjectURL(a.href);
+  toast(`Exported ${recs.length} rows.`);
+}
