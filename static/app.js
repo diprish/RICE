@@ -600,6 +600,32 @@ function gridColumns() {
   ];
 }
 
+// Row coloring by Object Status — mirrors statusColor() so rows match the
+// pills, donuts, and matrix. Classes are styled in styles.css.
+const _statusKey = p => ((p.data && p.data.object_status) || "").toLowerCase();
+const ROW_RULES = {
+  "rice-row-blocked":    p => _statusKey(p).includes("block"),
+  "rice-row-delayed":    p => _statusKey(p).includes("delay"),
+  "rice-row-complete":   p => /complete|done/.test(_statusKey(p)),
+  "rice-row-notstarted": p => /not started|not-started/.test(_statusKey(p)),
+  "rice-row-progress":   p => { const k = _statusKey(p); return /progress|draft|fut|review|wip/.test(k) && !/delay/.test(k); },
+  "rice-row-other":      p => { const k = _statusKey(p); return !!k && !/block|delay|complete|done|not started|not-started|progress|draft|fut|review|wip/.test(k); },
+};
+
+// Live count of rows currently shown in the grid (reflects the global filter
+// bar AND any AG Grid column filters the user applies).
+function updateGridCount() {
+  const api = State.gridApi;
+  const el = $("#gridCount");
+  if (!api || !el) return;
+  let total = 0;
+  api.forEachNode(() => total++);            // all rows fed to the grid
+  const shown = api.getDisplayedRowCount();  // after every active filter
+  el.innerHTML = (shown === total)
+    ? `<b>${total}</b> ${total === 1 ? "row" : "rows"}`
+    : `Showing <b>${shown}</b> of ${total} rows`;
+}
+
 function renderGrid(recs) {
   if (!State.gridApi) {
     const options = {
@@ -610,6 +636,8 @@ function renderGrid(recs) {
       tooltipShowDelay: 300,
       animateRows: false,
       rowHeight: 34,
+      rowClassRules: ROW_RULES,
+      onModelUpdated: updateGridCount,
     };
     State.gridApi = agGrid.createGrid($("#riceGrid"), options);
   } else {
