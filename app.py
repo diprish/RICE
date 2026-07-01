@@ -25,6 +25,7 @@ from flask import Flask, jsonify, request, render_template, send_file
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 DATA_FILE = os.path.join(BASE_DIR, "rice_tracker_data.xlsx")
+SAVED_FILTERS_FILE = os.path.join(BASE_DIR, "saved_filters.json")
 SHEET_CANDIDATES = ["1.4.2 - Overall Rice Tracker_rb"]  # preferred sheet names
 ALLOWED_EXT = {".xlsx", ".xlsm", ".xls"}
 HOURS_PER_DEV_WEEK = 45.0
@@ -36,14 +37,14 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload cap
 
 # Program timeline (fixed configuration from the program plan).
 PROGRAM_TIMELINE = [
-    {"name": "Sprint 1", "type": "Sprint", "status": "Completed", "start": "2026-03-23", "end": "2026-04-24"},
+    {"name": "Sprint 1", "type": "Sprint", "status": "Completed", "start": "2026-03-23", "end": "2026-05-1"},
     {"name": "Sprint 2", "type": "Sprint", "status": "In Progress", "start": "2026-06-22", "end": "2026-07-17"},
     {"name": "Sprint 3", "type": "Sprint", "status": "Planned", "start": "2026-07-27", "end": "2026-08-21"},
-    {"name": "SIT 1", "type": "SIT", "status": "Planned", "start": "2026-09-28", "end": "2026-10-26"},
-    {"name": "SIT 2", "type": "SIT", "status": "Planned", "start": "2026-11-09", "end": "2026-12-07"},
-    {"name": "UAT", "type": "UAT", "status": "Planned", "start": "2026-12-14", "end": "2027-01-11"},
-    {"name": "Cutover", "type": "Cutover", "status": "Planned", "start": "2027-01-18", "end": "2027-02-08"},
-    {"name": "Go-Live", "type": "Milestone", "status": "Planned", "start": "2027-02-09", "end": "2027-02-09"},
+    {"name": "SIT 1", "type": "SIT", "status": "Planned", "start": "2026-09-28", "end": "2026-10-30"},
+    {"name": "SIT 2", "type": "SIT", "status": "Planned", "start": "2026-11-09", "end": "2026-12-11"},
+    {"name": "UAT", "type": "UAT", "status": "Planned", "start": "2026-12-14", "end": "2027-01-15"},
+    {"name": "Cutover", "type": "Cutover", "status": "Planned", "start": "2027-01-18", "end": "2027-02-07"},
+    {"name": "Go-Live", "type": "Milestone", "status": "Planned", "start": "2027-02-08", "end": "2027-02-08"},
 ]
 
 # Column name -> canonical key. Matching is done by normalized prefix so the app
@@ -495,6 +496,53 @@ def api_export():
     mem.seek(0)
     return send_file(mem, mimetype="text/csv", as_attachment=True,
                      download_name="rice_tracker_export.csv")
+
+
+def _load_saved_filters():
+    if not os.path.exists(SAVED_FILTERS_FILE):
+        return {}
+    try:
+        with open(SAVED_FILTERS_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _store_saved_filters(views):
+    tmp = SAVED_FILTERS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(views, fh, indent=2)
+    os.replace(tmp, SAVED_FILTERS_FILE)
+
+
+@app.route("/api/saved-filters", methods=["GET"])
+def api_saved_filters_get():
+    return jsonify(_load_saved_filters())
+
+
+@app.route("/api/saved-filters", methods=["POST"])
+def api_saved_filters_save():
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    view = body.get("view")
+    if not name:
+        return jsonify({"error": "bad_request", "message": "A filter name is required."}), 400
+    if not isinstance(view, dict):
+        return jsonify({"error": "bad_request", "message": "A filter payload is required."}), 400
+    views = _load_saved_filters()
+    views[name] = view
+    _store_saved_filters(views)
+    return jsonify({"ok": True, "filters": views})
+
+
+@app.route("/api/saved-filters/<name>", methods=["DELETE"])
+def api_saved_filters_delete(name):
+    views = _load_saved_filters()
+    if name in views:
+        del views[name]
+        _store_saved_filters(views)
+    return jsonify({"ok": True, "filters": views})
 
 
 @app.route("/health")

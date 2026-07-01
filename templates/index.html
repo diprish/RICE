@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RICE Delivery Tracker — Executive Dashboard</title>
 
+  <!-- Prototype design system fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Public+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
   <!-- Choices.js (multi-select) -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/choices.js@10.2.0/public/assets/styles/choices.min.css" />
   <!-- AG Grid -->
@@ -63,71 +68,31 @@
 <!-- ===================== DASHBOARD ===================== -->
 <main id="dashboard" class="dashboard {{ 'show' if has_data else '' }}">
 
-  <!-- FILTER BAR -->
+  <!-- FILTER BAR — command bar + popover -->
   <section class="filterbar" id="filterbar">
-    <div class="filter-field">
-      <label>Accountable Org
-        <span class="label-actions">
-          <button type="button" class="mini-link" data-selectall="org">All</button>
-          <button type="button" class="mini-link" data-selectnone="org">None</button>
-          <button type="button" class="mini-link" data-selectinvert="org">Invert</button>
-        </span>
+    <div class="fb-head">
+      <div class="fb-title">Filters</div>
+      <div class="fb-count" id="resultCount"></div>
+    </div>
+    <div class="fb-pills" id="fbPills"></div>
+    <div class="fb-controls">
+      <label class="fb-search">
+        <svg width="17" height="17" viewBox="0 0 18 18" fill="none"><circle cx="8" cy="8" r="5.2" stroke="#a3abba" stroke-width="1.6"/><path d="m12.5 12.5 3 3" stroke="#a3abba" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <input type="text" id="fSearch" placeholder="Search ID, name, description, systems, owners…" autocomplete="off" />
       </label>
-      <select id="fOrg" multiple></select>
-    </div>
-    <div class="filter-field">
-      <label>Module
-        <span class="label-actions">
-          <button type="button" class="mini-link" data-selectall="module">All</button>
-          <button type="button" class="mini-link" data-selectnone="module">None</button>
-          <button type="button" class="mini-link" data-selectinvert="module">Invert</button>
-        </span>
-      </label>
-      <select id="fModule" multiple></select>
-    </div>
-    <div class="filter-field">
-      <label>Release
-        <span class="label-actions">
-          <button type="button" class="mini-link" data-selectall="release">All</button>
-          <button type="button" class="mini-link" data-selectnone="release">None</button>
-          <button type="button" class="mini-link" data-selectinvert="release">Invert</button>
-        </span>
-      </label>
-      <select id="fRelease" multiple></select>
-    </div>
-    <div class="filter-field">
-      <label>Sub Entity
-        <span class="label-actions">
-          <button type="button" class="mini-link" data-selectall="sub_entity">All</button>
-          <button type="button" class="mini-link" data-selectnone="sub_entity">None</button>
-          <button type="button" class="mini-link" data-selectinvert="sub_entity">Invert</button>
-        </span>
-      </label>
-      <select id="fSubEntity" multiple></select>
-    </div>
-    <div class="filter-field narrow">
-      <label>In Scope</label>
-      <select id="fScope"></select>
-    </div>
-    <div class="filter-field grow">
-      <label>Search <span class="muted">(ID · name · description · module · systems · owners)</span></label>
-      <input type="text" id="fSearch" placeholder="Type to search…" autocomplete="off" />
-    </div>
-    <div class="filter-field narrow">
-      <label>&nbsp;</label>
-      <button id="clearFilters" class="btn btn-ghost full">Clear filters</button>
-    </div>
-    <div class="filter-field">
-      <label>Saved Filters</label>
-      <div class="saved-views">
-        <select id="fSavedViews" title="Apply a saved filter set"></select>
-        <button id="saveViewBtn" class="btn btn-ghost" title="Save current filters as a new set">Save</button>
-        <button id="delViewBtn" class="btn btn-ghost" title="Delete the selected saved set">✕</button>
+      <div class="fpill-wrap" data-dim="saved">
+        <button type="button" class="fpill" data-toggle>
+          <span class="fpill-key">Saved</span>
+          <span class="fpill-val" id="savedPillVal">None</span>
+          <svg class="fpill-chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="fpop fpop-saved" data-menu>
+          <div class="fpop-saved-list" id="savedList"></div>
+          <div class="fpop-foot">
+            <button type="button" class="fpop-done" id="saveViewBtn">＋ Save current filters</button>
+          </div>
+        </div>
       </div>
-    </div>
-    <div class="filter-meta">
-      <span id="activeChips" class="chips"></span>
-      <span id="resultCount" class="result-count"></span>
     </div>
   </section>
 

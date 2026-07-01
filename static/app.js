@@ -3,19 +3,38 @@
    ============================================================ */
 "use strict";
 
-// Color a raw Object Status by keyword (no executive-status mapping).
+// Color a raw Object Status by keyword — prototype status scale
+// (grey → blues → green, plus red/amber for blocked/delayed).
 function statusColor(s) {
   const k = (s || "").toLowerCase();
-  if (k.includes("block")) return "#DA291C";
-  if (k.includes("delay")) return "#ED8B00";
-  if (k.includes("complete") || k.includes("done")) return "#046A38";
-  if (k.includes("not started") || k.includes("not-started")) return "#97999B";
-  if (/(progress|draft|fut|review|wip)/.test(k)) return "#00A3E0";
-  return "#6E2585";
+  if (k.includes("block")) return "#cf5064";                        // red
+  if (k.includes("delay")) return "#e0a33e";                        // amber
+  if (k.includes("complete") || k.includes("done")) return "#3f9d6b"; // green
+  if (k.includes("f-spec") || k.includes("fspec") || k.includes("f spec")) return "#7b74d1"; // mid indigo
+  if (k.includes("fut")) return "#9aa0ee";                          // light indigo
+  if (k.includes("dev-not") || k.includes("dev not")) return "#aeb6c2"; // grey (before "not started")
+  if (/(dev-in|dev in|in progress|progress|draft|review|wip)/.test(k)) return "#5b52e0"; // indigo
+  if (k.includes("not started") || k.includes("not-started")) return "#dfe3e9"; // light grey
+  return "#c3c9d4";                                                 // fallback grey
 }
-// Distinct raw Object Status values present, in a sensible display order.
+// Canonical display rank for statuses (lower = earlier): green, blues, amber, red, greys.
+function statusRank(s) {
+  const k = (s || "").toLowerCase();
+  if (k.includes("complete") || k.includes("done")) return 1;
+  if (k.includes("dev-in") || k.includes("dev in") || (k.includes("in progress") && !k.includes("f-spec") && !k.includes("fspec"))) return 2;
+  if (k.includes("f-spec") || k.includes("fspec") || k.includes("f spec")) return 3;
+  if (k.includes("fut")) return 4;
+  if (/(progress|draft|review|wip)/.test(k)) return 4.5;
+  if (k.includes("delay")) return 5;
+  if (k.includes("block")) return 6;
+  if (k.includes("dev-not") || k.includes("dev not")) return 7;
+  if (k.includes("not started") || k.includes("not-started")) return 8;
+  return 9;
+}
+// Distinct raw Object Status values present, ordered by canonical rank.
 function statusOrder(recs) {
-  return [...new Set(recs.map(r => r.object_status).filter(Boolean))].sort();
+  return [...new Set(recs.map(r => r.object_status).filter(Boolean))]
+    .sort((a, b) => (statusRank(a) - statusRank(b)) || a.localeCompare(b));
 }
 const TYPE_ORDER = ["Conversion", "Integration", "Report", "Extension"];
 const TYPE_COLOR = {
@@ -172,108 +191,219 @@ async function loadData() {
 /* ============================================================
    FILTERS
    ============================================================ */
+/* Filter dimensions rendered as pills (multi-select), in display order. */
+const FILTER_DIMS = [
+  { key: "org", label: "Org" },
+  { key: "module", label: "Module" },
+  { key: "release", label: "Release" },
+  { key: "sub_entity", label: "Sub Entity" },
+];
+// Selected values per multi-select dimension (empty set = "Any"). Scope is single-select.
+State.sel = { org: new Set(), module: new Set(), release: new Set(), sub_entity: new Set() };
+State.scope = "";
+State.scopeOptions = [];
+
 function initFilters() {
-  State.choices.org = new Choices($("#fOrg"), {
-    removeItemButton: true, placeholderValue: "Click to add — or use All / None / Invert", shouldSort: false, searchEnabled: true
+  // Close any open popover when clicking outside a pill, or on Escape.
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".fpill-wrap")) closeAllPopovers();
   });
-  State.choices.module = new Choices($("#fModule"), {
-    removeItemButton: true, placeholderValue: "Click to add — or use All / None / Invert", shouldSort: false, searchEnabled: true
-  });
-  State.choices.release = new Choices($("#fRelease"), {
-    removeItemButton: true, placeholderValue: "Click to add — or use All / None / Invert", shouldSort: false, searchEnabled: true
-  });
-  State.choices.sub_entity = new Choices($("#fSubEntity"), {
-    removeItemButton: true, placeholderValue: "Click to add — or use All / None / Invert", shouldSort: false, searchEnabled: true
-  });
-  $("#fOrg").addEventListener("change", applyFilters);
-  $("#fModule").addEventListener("change", applyFilters);
-  $("#fRelease").addEventListener("change", applyFilters);
-  $("#fSubEntity").addEventListener("change", applyFilters);
-  $("#fScope").addEventListener("change", applyFilters);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeAllPopovers(); });
+
+  // Search (debounced).
   let t;
   $("#fSearch").addEventListener("input", () => { clearTimeout(t); t = setTimeout(applyFilters, 180); });
-  $("#clearFilters").addEventListener("click", clearAllFilters);
 
-  // Saved filter sets (persisted in localStorage).
+  // Saved filters.
+  const savedWrap = $(`.fpill-wrap[data-dim="saved"]`);
+  $("[data-toggle]", savedWrap).addEventListener("click", (e) => { e.stopPropagation(); togglePopover(savedWrap); });
   $("#saveViewBtn").addEventListener("click", saveCurrentView);
-  $("#delViewBtn").addEventListener("click", deleteSelectedView);
-  $("#fSavedViews").addEventListener("change", e => { if (e.target.value) applySavedView(e.target.value); });
-  refreshSavedViews();
+  loadSavedViews();
+}
 
-  // "All" / "None" shortcuts for the multi-select filters.
-  $$("[data-selectall]").forEach(btn => btn.addEventListener("click", () => {
-    selectAllChoices(btn.getAttribute("data-selectall"));
+function closeAllPopovers() {
+  $$(".fpill-wrap.open").forEach(w => w.classList.remove("open"));
+}
+
+const CHEV_SVG = `<svg class="fpill-chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const CHECK_SVG = `<svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2.5 6 5 8.5 9.5 3.5" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const DOT_SVG = `<svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="#5b52e0"/></svg>`;
+
+function multiPillHTML(d) {
+  return `<div class="fpill-wrap" data-dim="${d.key}">
+    <button type="button" class="fpill" data-toggle>
+      <span class="fpill-key">${esc(d.label)}</span>
+      <span class="fpill-val">Any</span>${CHEV_SVG}
+    </button>
+    <div class="fpop">
+      <div class="fpop-search">
+        <svg width="16" height="16" viewBox="0 0 18 18" fill="none"><circle cx="8" cy="8" r="5.2" stroke="#a3abba" stroke-width="1.6"/><path d="m12.5 12.5 3 3" stroke="#a3abba" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <input type="text" placeholder="Filter ${esc(d.label.toLowerCase())}…" data-search autocomplete="off">
+      </div>
+      <div class="fpop-seg">
+        <button type="button" data-act="all">All</button>
+        <button type="button" data-act="none">None</button>
+        <button type="button" data-act="invert">Invert</button>
+      </div>
+      <div class="fpop-list" data-list></div>
+      <div class="fpop-foot">
+        <span class="fpop-count" data-count>0 selected</span>
+        <button type="button" class="fpop-done" data-done>Done</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function scopePillHTML() {
+  return `<div class="fpill-wrap" data-dim="scope">
+    <button type="button" class="fpill" data-toggle>
+      <span class="fpill-key">In Scope</span>
+      <span class="fpill-val">Any</span>${CHEV_SVG}
+    </button>
+    <div class="fpop fpop-menu" data-menu></div>
+  </div>`;
+}
+
+function wireMultiPill(d) {
+  const wrap = $(`.fpill-wrap[data-dim="${d.key}"]`);
+  const search = $("[data-search]", wrap);
+  $("[data-toggle]", wrap).addEventListener("click", (e) => { e.stopPropagation(); togglePopover(wrap); });
+  search.addEventListener("input", () => renderMultiList(d, search.value.trim().toLowerCase()));
+  $$("[data-act]", wrap).forEach(b => b.addEventListener("click", () => {
+    const act = b.getAttribute("data-act");
+    const all = State.allOptions[d.key] || [];
+    const sel = State.sel[d.key];
+    if (act === "all") all.forEach(v => sel.add(v));
+    else if (act === "none") sel.clear();
+    else { const inv = all.filter(v => !sel.has(v)); sel.clear(); inv.forEach(v => sel.add(v)); }
+    renderMultiList(d, search.value.trim().toLowerCase());
+    onFilterChange(d.key);
   }));
-  $$("[data-selectnone]").forEach(btn => btn.addEventListener("click", () => {
-    const which = btn.getAttribute("data-selectnone");
-    State.choices[which].removeActiveItems();
-    applyFilters();
+  $("[data-done]", wrap).addEventListener("click", () => togglePopover(wrap, false));
+  renderMultiList(d, "");
+}
+
+function renderMultiList(d, q) {
+  const wrap = $(`.fpill-wrap[data-dim="${d.key}"]`);
+  const list = $("[data-list]", wrap);
+  const sel = State.sel[d.key];
+  const opts = (State.allOptions[d.key] || []).filter(v => !q || v.toLowerCase().includes(q));
+  list.innerHTML = opts.map(v => {
+    const on = sel.has(v);
+    return `<label class="fpop-opt${on ? " on" : ""}" data-val="${esc(v)}">
+      <span class="fpop-box">${on ? CHECK_SVG : ""}</span>
+      <span class="fpop-optlabel">${esc(v)}</span>
+    </label>`;
+  }).join("") || `<div class="fpop-empty">No matches</div>`;
+  $$(".fpop-opt", list).forEach(opt => opt.addEventListener("click", (e) => {
+    e.preventDefault();
+    const v = opt.getAttribute("data-val");
+    if (sel.has(v)) sel.delete(v); else sel.add(v);
+    opt.classList.toggle("on");
+    $(".fpop-box", opt).innerHTML = sel.has(v) ? CHECK_SVG : "";
+    updateFootCount(d);
+    onFilterChange(d.key);
   }));
-  $$("[data-selectinvert]").forEach(btn => btn.addEventListener("click", () => {
-    invertChoices(btn.getAttribute("data-selectinvert"));
+  updateFootCount(d);
+}
+
+function updateFootCount(d) {
+  const c = $(`.fpill-wrap[data-dim="${d.key}"] [data-count]`);
+  if (c) c.textContent = `${State.sel[d.key].size} selected`;
+}
+
+function wireScopePill() {
+  const wrap = $(`.fpill-wrap[data-dim="scope"]`);
+  $("[data-toggle]", wrap).addEventListener("click", (e) => { e.stopPropagation(); togglePopover(wrap); });
+  renderScopeMenu();
+}
+
+function renderScopeMenu() {
+  const menu = $(`.fpill-wrap[data-dim="scope"] [data-menu]`);
+  const opts = [["", "Any"]].concat((State.scopeOptions || []).map(v => [v, v]));
+  menu.innerHTML = opts.map(([val, label]) => {
+    const on = State.scope === val;
+    return `<button type="button" class="fpop-menu-item${on ? " on" : ""}" data-scope="${esc(val)}">
+      <span class="fpop-radio">${on ? DOT_SVG : ""}</span><span>${esc(label)}</span>
+    </button>`;
+  }).join("");
+  $$("[data-scope]", menu).forEach(b => b.addEventListener("click", () => {
+    State.scope = b.getAttribute("data-scope");
+    renderScopeMenu();
+    onFilterChange("scope");
+    togglePopover($(`.fpill-wrap[data-dim="scope"]`), false);
   }));
 }
 
-function invertChoices(which) {
-  const all = (State.allOptions && State.allOptions[which]) || [];
-  const ch = State.choices[which];
-  if (!ch) return;
-  const selected = new Set(ch.getValue(true) || []);
-  const inverse = all.filter(v => !selected.has(v));
-  ch.removeActiveItems();
-  if (inverse.length && typeof ch.setChoiceByValue === "function") {
-    ch.setChoiceByValue(inverse);
+function togglePopover(wrap, force) {
+  const willOpen = force === undefined ? !wrap.classList.contains("open") : force;
+  closeAllPopovers();
+  if (willOpen) {
+    wrap.classList.add("open");
+    const s = $("[data-search]", wrap);
+    if (s) { s.value = ""; const d = FILTER_DIMS.find(x => x.key === wrap.getAttribute("data-dim")); if (d) renderMultiList(d, ""); setTimeout(() => s.focus(), 0); }
   }
+}
+
+function onFilterChange(key) {
+  updatePillLabel(key);
   applyFilters();
 }
 
-function selectAllChoices(which) {
-  const all = (State.allOptions && State.allOptions[which]) || [];
-  const ch = State.choices[which];
-  if (!ch) return;
-  // Reset then select every option, so the result is exactly the full set.
-  ch.removeActiveItems();
-  if (typeof ch.setChoiceByValue === "function") {
-    ch.setChoiceByValue(all);   // accepts an array of values
-  }
-  applyFilters();
+function updateAllPillLabels() {
+  FILTER_DIMS.forEach(d => updatePillLabel(d.key));
+  updatePillLabel("scope");
 }
 
+function updatePillLabel(key) {
+  const wrap = $(`.fpill-wrap[data-dim="${key}"]`);
+  if (!wrap) return;
+  const valEl = $(".fpill-val", wrap);
+  let text = "Any", active = false;
+  if (key === "scope") {
+    active = !!State.scope;
+    text = State.scope || "Any";
+  } else {
+    const sel = State.sel[key];
+    const total = (State.allOptions[key] || []).length;
+    if (sel.size === 0) { text = "Any"; }
+    else if (total && sel.size === total) { text = `All (${total})`; active = true; }
+    else if (sel.size === 1) { text = [...sel][0]; active = true; }
+    else { text = `${sel.size} selected`; active = true; }
+  }
+  valEl.textContent = text;
+  wrap.classList.toggle("active", active);
+}
+
+// Build the pills + popovers once the filter option universes are known.
 function populateFilterOptions(j) {
   const f = j.filters;
-  State.allOptions = { org: f.accountable_org.slice(), module: f.module.slice(), release: (f.release || []).slice(), sub_entity: (f.sub_entity || []).slice() };
-  State.choices.org.clearChoices();
-  State.choices.org.setChoices(f.accountable_org.map(v => ({ value: v, label: v })), "value", "label", true);
-  State.choices.module.clearChoices();
-  State.choices.module.setChoices(f.module.map(v => ({ value: v, label: v })), "value", "label", true);
-  State.choices.release.clearChoices();
-  State.choices.release.setChoices((f.release || []).map(v => ({ value: v, label: v })), "value", "label", true);
-  State.choices.sub_entity.clearChoices();
-  State.choices.sub_entity.setChoices((f.sub_entity || []).map(v => ({ value: v, label: v })), "value", "label", true);
-  const scope = $("#fScope");
-  scope.innerHTML = `<option value="">All</option>` + f.in_scope.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  State.allOptions = {
+    org: (f.accountable_org || []).slice(),
+    module: (f.module || []).slice(),
+    release: (f.release || []).slice(),
+    sub_entity: (f.sub_entity || []).slice(),
+  };
+  State.scopeOptions = (f.in_scope || []).slice();
+
+  $("#fbPills").innerHTML = FILTER_DIMS.map(multiPillHTML).join("") + scopePillHTML();
+  FILTER_DIMS.forEach(wireMultiPill);
+  wireScopePill();
+  updateAllPillLabels();
 }
+
+const SEARCH_FIELDS = ["rice_id", "object_name", "description", "module", "source_system", "target_system",
+  "functional_owner", "technical_owner", "rice_owner", "tech_spec_owner"];
 
 function getBaseFilters() {
   return {
-    org: State.choices.org.getValue(true) || [],
-    module: State.choices.module.getValue(true) || [],
-    release: State.choices.release.getValue(true) || [],
-    sub_entity: State.choices.sub_entity.getValue(true) || [],
-    scope: $("#fScope").value,
-    search: $("#fSearch").value.trim().toLowerCase(),
+    org: [...State.sel.org],
+    module: [...State.sel.module],
+    release: [...State.sel.release],
+    sub_entity: [...State.sel.sub_entity],
+    scope: State.scope,
+    search: ($("#fSearch").value || "").trim().toLowerCase(),
   };
-}
-
-function clearAllFilters() {
-  State.choices.org.removeActiveItems();
-  State.choices.module.removeActiveItems();
-  State.choices.release.removeActiveItems();
-  State.choices.sub_entity.removeActiveItems();
-  $("#fScope").value = "";
-  $("#fSearch").value = "";
-  State.quick = {};
-  applyFilters();
 }
 
 function setQuick(obj) {
@@ -281,79 +411,6 @@ function setQuick(obj) {
   applyFilters();
   document.getElementById("sec-plan").scrollIntoView({ behavior: "smooth", block: "start" });
 }
-
-/* ---------------- saved filter sets ---------------- */
-const SAVED_VIEWS_KEY = "rice_saved_filters";
-
-function loadSavedViews() {
-  try { return JSON.parse(localStorage.getItem(SAVED_VIEWS_KEY)) || {}; }
-  catch { return {}; }
-}
-function storeSavedViews(views) {
-  localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(views));
-}
-
-// Snapshot every active filter so it can be restored later.
-function captureFilters() {
-  const f = getBaseFilters();
-  return {
-    org: f.org, module: f.module, release: f.release, sub_entity: f.sub_entity,
-    scope: $("#fScope").value, search: $("#fSearch").value,
-    quick: { ...State.quick },
-  };
-}
-
-function refreshSavedViews(selected = "") {
-  const views = loadSavedViews();
-  const names = Object.keys(views).sort((a, b) => a.localeCompare(b));
-  const sel = $("#fSavedViews");
-  sel.innerHTML = `<option value="">${names.length ? "— Apply saved —" : "— None saved —"}</option>` +
-    names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
-  sel.value = selected;
-}
-
-function saveCurrentView() {
-  const name = (prompt("Name this filter set:") || "").trim();
-  if (!name) return;
-  const views = loadSavedViews();
-  if (views[name] && !confirm(`Overwrite the saved filter "${name}"?`)) return;
-  views[name] = captureFilters();
-  storeSavedViews(views);
-  refreshSavedViews(name);
-  toast(`Saved filter "${name}"`);
-}
-
-function deleteSelectedView() {
-  const name = $("#fSavedViews").value;
-  if (!name) { toast("Pick a saved filter to delete"); return; }
-  if (!confirm(`Delete saved filter "${name}"?`)) return;
-  const views = loadSavedViews();
-  delete views[name];
-  storeSavedViews(views);
-  refreshSavedViews();
-  toast(`Deleted "${name}"`);
-}
-
-function applySavedView(name) {
-  const v = loadSavedViews()[name];
-  if (!v) return;
-  const setMulti = (which, vals) => {
-    const ch = State.choices[which];
-    ch.removeActiveItems();
-    if ((vals || []).length && typeof ch.setChoiceByValue === "function") ch.setChoiceByValue(vals);
-  };
-  setMulti("org", v.org);
-  setMulti("module", v.module);
-  setMulti("release", v.release);
-  setMulti("sub_entity", v.sub_entity);
-  $("#fScope").value = v.scope || "";
-  $("#fSearch").value = v.search || "";
-  State.quick = { ...(v.quick || {}) };
-  applyFilters();
-}
-
-const SEARCH_FIELDS = ["rice_id", "object_name", "description", "module", "source_system", "target_system",
-  "functional_owner", "technical_owner", "rice_owner", "tech_spec_owner"];
 
 function applyFilters() {
   if (!State.data) return;
@@ -374,42 +431,93 @@ function applyFilters() {
     if (q.assigned_sprint && r.assigned_sprint !== q.assigned_sprint) return false;
     return true;
   });
-  renderChips(f);
-  $("#resultCount").textContent = `${State.filtered.length} of ${State.data.record_count} objects`;
+  updateResultCount();
   renderAll(State.filtered);
 }
 
-function renderChips(f) {
-  const chips = [];
-  addMultiChips(chips, "Org", "org", f.org);
-  addMultiChips(chips, "Module", "module", f.module);
-  addMultiChips(chips, "Release", "release", f.release);
-  addMultiChips(chips, "Sub Entity", "sub_entity", f.sub_entity);
-  if (f.scope) chips.push(["In Scope", f.scope, () => { $("#fScope").value = ""; applyFilters(); }]);
-  if (f.search) chips.push(["Search", `"${f.search}"`, () => { $("#fSearch").value = ""; applyFilters(); }]);
-  Object.entries(State.quick).forEach(([k, v]) => {
-    if (v) chips.push([k.replace("_", " "), v, () => { delete State.quick[k]; applyFilters(); }]);
+function updateResultCount() {
+  const el = $("#resultCount");
+  if (el) el.innerHTML = `<span>${State.filtered.length}</span> / ${State.data.record_count} objects`;
+}
+
+/* ---------------- saved filter sets (persisted server-side) ---------------- */
+let SavedViews = {};
+
+async function loadSavedViews() {
+  try {
+    const r = await fetch("/api/saved-filters");
+    SavedViews = r.ok ? (await r.json()) || {} : {};
+  } catch { SavedViews = {}; }
+  renderSavedMenu();
+}
+
+// Snapshot every active filter so it can be restored later.
+function captureFilters() {
+  const f = getBaseFilters();
+  return { org: f.org, module: f.module, release: f.release, sub_entity: f.sub_entity,
+    scope: f.scope, search: $("#fSearch").value, quick: { ...State.quick } };
+}
+
+function renderSavedMenu() {
+  const names = Object.keys(SavedViews).sort((a, b) => a.localeCompare(b));
+  const list = $("#savedList");
+  list.innerHTML = names.length
+    ? names.map(n => `<div class="fsaved-row">
+        <button type="button" class="fsaved-apply" data-name="${esc(n)}">${esc(n)}</button>
+        <button type="button" class="fsaved-del" data-del="${esc(n)}" title="Delete">✕</button>
+      </div>`).join("")
+    : `<div class="fsaved-empty">No saved filters yet</div>`;
+  $$(".fsaved-apply", list).forEach(b => b.addEventListener("click", () => {
+    applySavedView(b.getAttribute("data-name"));
+    togglePopover($(`.fpill-wrap[data-dim="saved"]`), false);
+  }));
+  $$(".fsaved-del", list).forEach(b => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    deleteSavedView(b.getAttribute("data-del"));
+  }));
+  const val = $("#savedPillVal");
+  if (val) val.textContent = names.length ? `${names.length} saved` : "None";
+}
+
+async function saveCurrentView() {
+  const name = (prompt("Name this filter set:") || "").trim();
+  if (!name) return;
+  if (SavedViews[name] && !confirm(`Overwrite the saved filter "${name}"?`)) return;
+  try {
+    const r = await fetch("/api/saved-filters", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, view: captureFilters() }),
+    });
+    if (!r.ok) throw new Error("save failed");
+    SavedViews = (await r.json()).filters || {};
+    renderSavedMenu();
+    toast(`Saved filter "${name}"`);
+  } catch { toast("Could not save filter"); }
+}
+
+async function deleteSavedView(name) {
+  if (!confirm(`Delete saved filter "${name}"?`)) return;
+  try {
+    const r = await fetch(`/api/saved-filters/${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (!r.ok) throw new Error("delete failed");
+    SavedViews = (await r.json()).filters || {};
+    renderSavedMenu();
+    toast(`Deleted "${name}"`);
+  } catch { toast("Could not delete filter"); }
+}
+
+function applySavedView(name) {
+  const v = SavedViews[name];
+  if (!v) return;
+  ["org", "module", "release", "sub_entity"].forEach(k => {
+    State.sel[k] = new Set(v[k] || []);
+    updatePillLabel(k);
   });
-  const wrap = $("#activeChips");
-  wrap.innerHTML = chips.map((_, i) => `<span class="chip" data-i="${i}"><b>${esc(chips[i][0])}:</b> ${esc(chips[i][1])} <span class="x">✕</span></span>`).join("");
-  $$(".chip .x", wrap).forEach((x, i) => x.addEventListener("click", () => chips[i][2]()));
-}
-// Collapse multi-select selections into a compact summary chip. Listing every
-// selected value (often the full set) is what made the filter bar explode.
-function addMultiChips(chips, label, which, vals) {
-  if (!vals.length) return;
-  const total = ((State.allOptions && State.allOptions[which]) || []).length;
-  const clearAll = () => { State.choices[which].removeActiveItems(); applyFilters(); };
-  if (total && vals.length === total) {
-    chips.push([label, `All (${total})`, clearAll]);
-  } else if (vals.length > 3) {
-    chips.push([label, `${vals.length} selected`, clearAll]);
-  } else {
-    vals.forEach(v => chips.push([label, v, () => removeChoice(which, v)]));
-  }
-}
-function removeChoice(which, value) {
-  State.choices[which].removeActiveItemsByValue(value);
+  State.scope = v.scope || "";
+  updatePillLabel("scope");
+  renderScopeMenu();
+  $("#fSearch").value = v.search || "";
+  State.quick = { ...(v.quick || {}) };
   applyFilters();
 }
 
@@ -450,52 +558,55 @@ function renderTypeCards(recs) {
   ).filter(t => recs.some(r => r.rice_type === t));
 
   // First tile = All Types (the filtered total + status mix), then one per type.
-  const panels = [{ key: "all", label: "All Types", subset: recs, total: true }]
-    .concat(types.map(t => ({ key: slug(t), label: t, subset: recs.filter(r => r.rice_type === t), total: false })));
+  const panels = [{ key: "all", label: "All Types", subset: recs, hero: true }]
+    .concat(types.map(t => ({ key: slug(t), label: t, subset: recs.filter(r => r.rice_type === t), hero: false })));
 
-  const el = $("#typeCards");
-  el.innerHTML = panels.map(p => `<div class="card${p.total ? " total-tile" : ""}">
-      <div class="type-card">
-        <div class="tc-stats" id="stats_${p.key}"></div>
-        <div class="donut-wrap"><canvas id="donut_${p.key}"></canvas>
-          <div class="donut-center" id="center_${p.key}"></div>
-        </div>
-      </div>
-    </div>`).join("");
+  const C = 2 * Math.PI * 46;  // donut circumference
 
-  panels.forEach(p => {
+  $("#typeCards").innerHTML = panels.map(p => {
     const subset = p.subset;
     const sc = countByStatus(subset);
-    const order = statusOrder(subset);
+    const order = statusOrder(subset).filter(s => sc[s]);
     const total = subset.length;
     const completed = sc["Completed"] || 0;
     const pct = total ? Math.round(100 * completed / total) : 0;
+    const arc = C * pct / 100;
 
-    $("#stats_" + p.key).innerHTML =
-      `<div class="tc-name">${esc(p.label)} <span class="tc-count${p.total ? " total" : ""}">${total}</span></div>` +
-      order.map(s => sc[s] ? `<div class="tc-row"><span><i class="tc-dot" style="background:${statusColor(s)}"></i>${esc(s)}</span><b style="color:${statusColor(s)}">${sc[s]}</b></div>` : "").join("");
-    $("#center_" + p.key).innerHTML = `<div><b>${pct}%</b><small>complete</small></div>`;
+    // Legend: one row per present status, counts right-aligned in mono.
+    const legend = order.map(s =>
+      `<div class="tc-row"><span class="tc-dot" style="background:${statusColor(s)}"></span>` +
+      `<span class="tc-label">${esc(s)}</span><span class="tc-num">${sc[s]}</span></div>`
+    ).join("");
+    const note = (pct === 0 && total > 0) ? `<div class="tc-note">No work started yet</div>` : "";
 
-    const ctx = $("#donut_" + p.key);
-    if (State.charts[p.key]) State.charts[p.key].destroy();
-    const labels = order.filter(s => sc[s]);
-    State.charts[p.key] = new Chart(ctx, {
-      type: "doughnut",
-      data: {
-        labels,
-        datasets: [{
-          data: labels.map(s => sc[s]),
-          backgroundColor: labels.map(s => statusColor(s)),
-          borderWidth: 2,
-          borderColor: getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#fff",
-        }],
-      },
-      options: {
-        cutout: "70%", responsive: true, maintainAspectRatio: true,
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => ` ${c.label}: ${c.raw}` } } },
-      },
-    });
-  });
+    // Slim stacked status bar.
+    const bar = total ? order.map(s =>
+      `<div style="width:${(100 * sc[s] / total).toFixed(2)}%;background:${statusColor(s)}"></div>`
+    ).join("") : `<div style="width:100%;background:#dfe3e9"></div>`;
+
+    // Completion-only donut (single clean arc).
+    const donutArc = pct > 0
+      ? `<circle cx="60" cy="60" r="46" fill="none" stroke="#3f9d6b" stroke-width="13" stroke-linecap="round" stroke-dasharray="${arc.toFixed(1)} ${(C - arc).toFixed(1)}" transform="rotate(-90 60 60)"/>`
+      : "";
+    const pctFill = pct > 0 ? "#1c2230" : "#a3abba";
+
+    return `<div class="tcard${p.hero ? " hero" : ""}">
+      <div class="tcard-head">
+        <span class="tcard-name">${esc(p.label)}</span>
+        <span class="tcard-badge${p.hero ? " hero" : ""}">${total}</span>
+      </div>
+      <div class="tcard-body">
+        <svg class="tcard-donut" width="112" height="112" viewBox="0 0 120 120">
+          <circle cx="60" cy="60" r="46" fill="none" stroke="#eef0f3" stroke-width="13"/>
+          ${donutArc}
+          <text x="60" y="57" text-anchor="middle" font-family="'IBM Plex Mono',monospace" font-size="26" font-weight="600" fill="${pctFill}">${pct}%</text>
+          <text x="60" y="74" text-anchor="middle" font-family="'Public Sans',sans-serif" font-size="9" letter-spacing="1.5" fill="#a3abba">COMPLETE</text>
+        </svg>
+        <div class="tcard-legend">${legend}${note}</div>
+      </div>
+      <div class="tcard-bar">${bar}</div>
+    </div>`;
+  }).join("");
 }
 function countByStatus(recs) {
   const m = {}; recs.forEach(r => m[r.object_status] = (m[r.object_status] || 0) + 1); return m;
