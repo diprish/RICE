@@ -236,10 +236,13 @@ def process(path):
     ]
 
     def find_phase(ts):
+        # Program phases have gaps between them (buffer weeks). A date that
+        # falls in a gap is "due by" the next upcoming phase rather than
+        # unscheduled, so match the earliest phase whose end hasn't passed.
         if ts is None or pd.isna(ts):
             return None
         for t in timeline:
-            if t["start_ts"] <= ts <= t["end_ts"]:
+            if ts <= t["end_ts"]:
                 return t["name"]
         return None
 
