@@ -45,7 +45,7 @@ const PHASE_FILL = {
   "Sprint 1": "rgba(134,188,37,.16)", "Sprint 2": "rgba(0,163,224,.14)",
   "Sprint 3": "rgba(110,37,133,.13)", "SIT 1": "rgba(237,139,0,.16)",
   "SIT 2": "rgba(237,139,0,.16)", "UAT": "rgba(110,37,133,.20)",
-  "Cutover": "rgba(218,41,28,.16)", "Go-Live": "rgba(0,163,224,.20)"
+  "Cutover": "rgba(218,41,28,.16)", "Post Go-Live": "rgba(0,163,224,.20)"
 };
 
 const State = {
@@ -673,7 +673,7 @@ function renderSprintSummary(recs) {
       `<i style="width:${(100 * sc[s] / (list.length || 1)).toFixed(1)}%;background:${statusColor(s)}" title="${esc(s)}: ${sc[s]}"></i>`).join("");
     const breaks = order.filter(s => sc[s]).map(s =>
       `<span>${esc(s)}<b> ${sc[s]}</b></span>`).join("") || `<span class="muted">no objects</span>`;
-    const dates = p.start ? `${fmtDate(p.start)} – ${fmtDate(p.end)}` : "Not date-assigned";
+    const dates = p.start ? (p.open_ended ? `${fmtDate(p.start)} onward` : `${fmtDate(p.start)} – ${fmtDate(p.end)}`) : "Not date-assigned";
     return `<div class="sprint-card phase-${esc(p.type)}" data-sprint="${esc(p.name)}">
       <div class="sprint-head"><h3>${esc(p.name)}</h3><span class="sprint-status">${esc(p.status)}</span></div>
       <div class="sprint-dates">${dates}</div>
@@ -796,12 +796,22 @@ function initPlanToggle() {
    ============================================================ */
 function renderGantt(recs) {
   const rows = recs.filter(r => r.gantt_start && r.gantt_delivery)
-    .sort((a, b) => parseISO(a.gantt_start) - parseISO(b.gantt_start));
+    .sort((a, b) => {
+      const ta = TYPE_ORDER.indexOf(a.rice_type), tb = TYPE_ORDER.indexOf(b.rice_type);
+      const ra = ta === -1 ? TYPE_ORDER.length : ta, rb = tb === -1 ? TYPE_ORDER.length : tb;
+      if (ra !== rb) return ra - rb;
+      if (a.rice_type !== b.rice_type) return (a.rice_type || "").localeCompare(b.rice_type || "");
+      return (a.rice_id || "").localeCompare(b.rice_id || "", undefined, { numeric: true });
+    });
   const wrap = $("#ganttScroll");
   if (!rows.length) { wrap.innerHTML = `<div class="risk-empty">No objects with scheduling dates in the current filter.</div>`; return; }
 
   const tl = State.data.timeline;
-  let minD = parseISO(tl[0].start), maxD = parseISO(tl[tl.length - 1].end);
+  // Open-ended phases (e.g. Post Go-Live) have a far-future sentinel end date
+  // that would blow up the axis scale — anchor the baseline on the last
+  // bounded phase instead and let real object dates extend it if needed.
+  const boundedTl = tl.filter(p => !p.open_ended);
+  let minD = parseISO(tl[0].start), maxD = parseISO((boundedTl[boundedTl.length - 1] || tl[tl.length - 1]).end);
   rows.forEach(r => {
     const s = parseISO(r.gantt_start), d = parseISO(r.gantt_delivery), sp = parseISO(r.gantt_spec);
     [s, d, sp].forEach(x => { if (x && x < minD) minD = x; if (x && x > maxD) maxD = x; });
@@ -820,7 +830,7 @@ function renderGantt(recs) {
   let bg = "", axis = "";
   const lastRight = { 1: -1e9, 2: -1e9 };
   tl.forEach(p => {
-    const ps = parseISO(p.start), pe = parseISO(p.end);
+    const ps = parseISO(p.start), pe = p.open_ended ? maxD : parseISO(p.end);
     const x1 = x(ps), x2 = Math.max(x(pe), x1 + 2);
     bg += `<rect x="${x1}" y="${TOP}" width="${x2 - x1}" height="${rows.length * ROW_H}" fill="${PHASE_FILL[p.name] || "rgba(0,0,0,.03)"}"/>`;
     const cx = (x1 + x2) / 2;
@@ -907,7 +917,10 @@ function renderCapacity(recs) {
   recs = recs.filter(r => r.rice_type !== "Conversion");
   const HPW = State.data.hours_per_dev_week || 45;
   const tl = State.data.timeline;
-  let minD = parseISO(tl[0].start), maxD = parseISO(tl[tl.length - 1].end);
+  // Open-ended phases (e.g. Post Go-Live) have a far-future sentinel end date
+  // that would blow up the week-column range — anchor on the last bounded phase.
+  const boundedTl = tl.filter(p => !p.open_ended);
+  let minD = parseISO(tl[0].start), maxD = parseISO((boundedTl[boundedTl.length - 1] || tl[tl.length - 1]).end);
 
   // build per-week, per-type hours
   const data = {}; // weekKey -> {type -> {hours, objs[]}}
