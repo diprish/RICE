@@ -44,7 +44,7 @@ PROGRAM_TIMELINE = [
     {"name": "SIT 2", "type": "SIT", "status": "Planned", "start": "2026-11-09", "end": "2026-12-11"},
     {"name": "UAT", "type": "UAT", "status": "Planned", "start": "2026-12-14", "end": "2027-01-15"},
     {"name": "Cutover", "type": "Cutover", "status": "Planned", "start": "2027-01-18", "end": "2027-02-07"},
-    {"name": "Go-Live", "type": "Milestone", "status": "Planned", "start": "2027-02-08", "end": "2027-02-08"},
+    {"name": "Post Go-Live", "type": "Milestone", "status": "Planned", "start": "2027-02-08", "end": "2027-02-08"},
 ]
 
 # Column name -> canonical key. Matching is done by normalized prefix so the app
