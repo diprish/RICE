@@ -164,6 +164,18 @@ code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px;
 .fb-count span { color: var(--text); font-weight: 600; }
 .fb-pills { display: flex; flex-wrap: wrap; gap: 10px; }
 
+/* quick filters — set by clicking a card/cell, cleared via the × */
+.fb-quick:empty { display: none; }
+.fb-quick { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.qchip { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 8px 0 12px;
+  border-radius: 8px; border: 1px solid var(--indigo-border); background: var(--indigo-bg);
+  font-size: 13px; color: var(--indigo-dark); }
+.qchip b { font-weight: 600; }
+.qchip-x { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  border: none; border-radius: 5px; background: none; color: #7b74d1; cursor: pointer; font-size: 15px;
+  line-height: 1; padding: 0; }
+.qchip-x:hover { background: rgba(91,82,224,.16); }
+
 /* pill */
 .fpill-wrap { position: relative; }
 .fpill { display: inline-flex; align-items: center; gap: 9px; height: 46px; padding: 0 14px;

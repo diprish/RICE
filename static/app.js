@@ -412,6 +412,26 @@ function setQuick(obj) {
   document.getElementById("sec-plan").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+const QUICK_LABELS = { rice_type: "Type", object_status: "Status", assigned_sprint: "Sprint" };
+
+function clearQuick(key) {
+  const q = { ...State.quick };
+  delete q[key];
+  State.quick = q;
+  applyFilters();
+}
+
+function renderQuickPills() {
+  const el = $("#quickPills");
+  if (!el) return;
+  const keys = Object.keys(State.quick).filter(k => State.quick[k]);
+  el.innerHTML = keys.map(k =>
+    `<span class="qchip">${esc(QUICK_LABELS[k] || k)}: <b>${esc(State.quick[k])}</b>
+      <button type="button" class="qchip-x" data-key="${esc(k)}" aria-label="Clear ${esc(QUICK_LABELS[k] || k)} filter">×</button>
+    </span>`).join("");
+  $$(".qchip-x", el).forEach(btn => btn.addEventListener("click", () => clearQuick(btn.dataset.key)));
+}
+
 function applyFilters() {
   if (!State.data) return;
   const f = getBaseFilters();
@@ -432,6 +452,7 @@ function applyFilters() {
     return true;
   });
   updateResultCount();
+  renderQuickPills();
   renderAll(State.filtered);
 }
 
