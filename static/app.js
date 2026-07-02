@@ -45,7 +45,7 @@ const PHASE_FILL = {
   "Sprint 1": "rgba(134,188,37,.16)", "Sprint 2": "rgba(0,163,224,.14)",
   "Sprint 3": "rgba(110,37,133,.13)", "SIT 1": "rgba(237,139,0,.16)",
   "SIT 2": "rgba(237,139,0,.16)", "UAT": "rgba(110,37,133,.20)",
-  "Cutover": "rgba(218,41,28,.16)", "Go-Live": "rgba(0,163,224,.20)"
+  "Cutover": "rgba(218,41,28,.16)", "Post Go-Live": "rgba(0,163,224,.20)"
 };
 
 const State = {
