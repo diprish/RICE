@@ -50,6 +50,32 @@ PROGRAM_TIMELINE = [
     {"name": "Post Go-Live", "type": "Milestone", "status": "Planned", "start": "2027-02-08", "end": "2099-12-31", "open_ended": True},
 ]
 
+
+def _with_gaps(program_timeline):
+    """Insert a synthetic "Gap b/w X and Y" phase between any two consecutive
+    phases that aren't back-to-back, so a date landing between cycles gets its
+    own tile instead of silently rolling into the next phase."""
+    expanded = []
+    for i, phase in enumerate(program_timeline):
+        expanded.append(phase)
+        if i + 1 >= len(program_timeline):
+            continue
+        nxt = program_timeline[i + 1]
+        gap_start = pd.Timestamp(phase["end"]) + pd.Timedelta(days=1)
+        gap_end = pd.Timestamp(nxt["start"]) - pd.Timedelta(days=1)
+        if gap_start <= gap_end:
+            expanded.append({
+                "name": f"Gap b/w {phase['name']} and {nxt['name']}",
+                "type": "Gap",
+                "status": "—",
+                "start": gap_start.strftime("%Y-%m-%d"),
+                "end": gap_end.strftime("%Y-%m-%d"),
+            })
+    return expanded
+
+
+PROGRAM_TIMELINE_EXPANDED = _with_gaps(PROGRAM_TIMELINE)
+
 # Column name -> canonical key. Matching is done by normalized prefix so the app
 # survives minor header drift (trailing notes, whitespace, case).
 COLUMN_MAP = {
@@ -235,13 +261,15 @@ def process(path):
     today = pd.Timestamp(dt.date.today())
     timeline = [
         {**t, "start_ts": pd.Timestamp(t["start"]), "end_ts": pd.Timestamp(t["end"])}
-        for t in PROGRAM_TIMELINE
+        for t in PROGRAM_TIMELINE_EXPANDED
     ]
 
     def find_phase(ts):
-        # Program phases have gaps between them (buffer weeks). A date that
-        # falls in a gap is "due by" the next upcoming phase rather than
-        # unscheduled, so match the earliest phase whose end hasn't passed.
+        # The expanded timeline fills every gap between phases with its own
+        # "Gap b/w X and Y" entry, so it tiles the calendar with no holes
+        # (aside from before the very first phase). Matching the earliest
+        # entry whose end hasn't passed therefore lands a date on its real
+        # phase, its gap tile, or (before day one) the first phase.
         if ts is None or pd.isna(ts):
             return None
         for t in timeline:
@@ -376,7 +404,7 @@ def process(path):
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         "source_sheet": sheet,
         "record_count": len(records),
-        "timeline": PROGRAM_TIMELINE,
+        "timeline": PROGRAM_TIMELINE_EXPANDED,
         "hours_per_dev_week": HOURS_PER_DEV_WEEK,
         "records": records,
         "filters": _filter_options(records),

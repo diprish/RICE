@@ -321,6 +321,8 @@ code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px;
 .sprint-card.phase-Cutover { border-top-color: var(--dl-red); }
 .sprint-card.phase-Milestone { border-top-color: var(--dl-blue); }
 .sprint-card.phase-Unscheduled { border-top-color: var(--dl-light-gray); }
+.sprint-card.phase-Gap { border-top-style: dashed; border-top-color: var(--dl-cool-gray); }
+.sprint-card.phase-Gap .sprint-head h3 { color: var(--text-2); font-weight: 600; }
 .sprint-head { display: flex; justify-content: space-between; align-items: baseline; }
 .sprint-head h3 { font-size: 15px; }
 .sprint-status { font-size: 10.5px; font-weight: 700; text-transform: uppercase; padding: 2px 7px;

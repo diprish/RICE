@@ -47,6 +47,11 @@ const PHASE_FILL = {
   "SIT 2": "rgba(237,139,0,.16)", "UAT": "rgba(110,37,133,.20)",
   "Cutover": "rgba(218,41,28,.16)", "Post Go-Live": "rgba(0,163,224,.20)"
 };
+// Gap tiles have dynamic names ("Gap b/w X and Y") so they can't be keyed in
+// PHASE_FILL directly — fall back on type instead.
+function phaseFillFor(name, type) {
+  return PHASE_FILL[name] || (type === "Gap" ? "rgba(117,120,123,.12)" : "rgba(0,0,0,.03)");
+}
 
 const State = {
   data: null,            // full payload
@@ -827,12 +832,15 @@ function renderGantt(recs) {
   // phase shading rects + labels. Labels are center-anchored; when one would
   // overlap the previous label (e.g. a wide Cutover band next to the 1-day
   // Go-Live milestone) it drops to a second row so the text never collides.
+  // Gap tiles are numerous and narrow, so they get shading + a hover title
+  // only (no inline label) rather than crowding the two label rows.
   let bg = "", axis = "";
   const lastRight = { 1: -1e9, 2: -1e9 };
   tl.forEach(p => {
     const ps = parseISO(p.start), pe = p.open_ended ? maxD : parseISO(p.end);
     const x1 = x(ps), x2 = Math.max(x(pe), x1 + 2);
-    bg += `<rect x="${x1}" y="${TOP}" width="${x2 - x1}" height="${rows.length * ROW_H}" fill="${PHASE_FILL[p.name] || "rgba(0,0,0,.03)"}"/>`;
+    bg += `<rect x="${x1}" y="${TOP}" width="${x2 - x1}" height="${rows.length * ROW_H}" fill="${phaseFillFor(p.name, p.type)}"><title>${esc(p.name)}</title></rect>`;
+    if (p.type === "Gap") return;
     const cx = (x1 + x2) / 2;
     const halfW = (esc(p.name).length * 6.4 + 6) / 2;   // approx label half-width
     const row = (cx - halfW < lastRight[1] + 4) ? 2 : 1;
@@ -951,7 +959,7 @@ function renderCapacity(recs) {
 
   const phaseOf = (wk) => {
     const d = parseISO(wk);
-    for (const p of tl) { if (parseISO(p.start) <= d && d <= parseISO(p.end)) return p.name; }
+    for (const p of tl) { if (parseISO(p.start) <= d && d <= parseISO(p.end)) return p; }
     return null;
   };
 
@@ -960,9 +968,9 @@ function renderCapacity(recs) {
 
   let head = `<tr><th class="lbl">RICE Type \\ Week</th>` + cols.map(c => {
     const ph = phaseOf(c);
-    const bg = ph ? PHASE_FILL[ph] : "";
+    const bg = ph ? phaseFillFor(ph.name, ph.type) : "";
     const mark = c === curWk ? ` style="background:var(--ph-current)"` : (bg ? ` style="background:${bg}"` : "");
-    return `<th${mark} title="${ph || "—"}">${fmtDate(c)}</th>`;
+    return `<th${mark} title="${ph ? esc(ph.name) : "—"}">${fmtDate(c)}</th>`;
   }).join("") + `</tr>`;
 
   const typeRow = (type) => {
