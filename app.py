@@ -331,7 +331,14 @@ def process(path):
             deliver_ts = pd.Timestamp(rec["build_actual"])
         elif rec["build_planned"]:
             deliver_ts = pd.Timestamp(rec["build_planned"])
-        rec["assigned_sprint"] = find_phase(deliver_ts) or "Unscheduled"
+        phase = find_phase(deliver_ts)
+        dev_not_applicable = (rec["dev_status"] or "").strip().lower() == "not applicable"
+        if phase:
+            rec["assigned_sprint"] = phase
+        elif dev_not_applicable:
+            rec["assigned_sprint"] = ""
+        else:
+            rec["assigned_sprint"] = "Unscheduled"
 
         # ---- Risk flags ----
         spec_eff_ts = pd.Timestamp(spec_eff) if spec_eff else None

@@ -641,7 +641,7 @@ function renderSprintSummary(recs) {
   const groups = {};
   phases.forEach(p => groups[p.name] = []);
   groups["Unscheduled"] = [];
-  recs.forEach(r => { (groups[r.assigned_sprint] || groups["Unscheduled"]).push(r); });
+  recs.forEach(r => { if (groups[r.assigned_sprint]) groups[r.assigned_sprint].push(r); });
 
   const cards = phases.concat([{ name: "Unscheduled", type: "Unscheduled", status: "—", start: null, end: null }]);
   $("#sprintSummary").innerHTML = cards.map(p => {
