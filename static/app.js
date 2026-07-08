@@ -812,6 +812,26 @@ function renderGantt(recs) {
       return (a.rice_id || "").localeCompare(b.rice_id || "", undefined, { numeric: true });
     });
   const wrap = $("#ganttScroll");
+
+  // Legend — build bars are colored by RICE type, so key the types actually
+  // present (in canonical order), then the shared markers. Kept in sync with
+  // the TYPE_COLOR palette used across the dashboard.
+  const legend = $("#ganttLegend");
+  if (legend) {
+    const typesPresent = TYPE_ORDER.concat(
+      [...new Set(recs.map(r => r.rice_type))].filter(t => !TYPE_ORDER.includes(t))
+    ).filter(t => rows.some(r => r.rice_type === t));
+    const typeSwatches = typesPresent.map(t =>
+      `<span><i class="g-swatch" style="background:${TYPE_COLOR[t] || "#00A3E0"}"></i>${esc(t)}</span>`).join("");
+    legend.innerHTML =
+      `<span class="gl-label">Build bars by RICE type:</span>${typeSwatches}` +
+      `<span class="gl-sep"></span>` +
+      `<span><i class="g-diamond"></i> Spec complete</span>` +
+      `<span><i class="g-dot"></i> Delivery</span>` +
+      `<span><i class="g-bar g-est"></i> Estimated (faded)</span>` +
+      `<span class="muted">| Phase shading behind timeline · current week highlighted</span>`;
+  }
+
   if (!rows.length) { wrap.innerHTML = `<div class="risk-empty">No objects with scheduling dates in the current filter.</div>`; return; }
 
   const tl = State.data.timeline;
@@ -892,7 +912,7 @@ function renderGantt(recs) {
     // spec diamond
     if (r.gantt_spec) {
       const sx = x(parseISO(r.gantt_spec));
-      bars += `<rect x="${sx - 5}" y="${cy - 5}" width="10" height="10" transform="rotate(45 ${sx} ${cy})" fill="#046A38"><title>Spec complete ${fmtDate(r.gantt_spec)}</title></rect>`;
+      bars += `<rect x="${sx - 5}" y="${cy - 5}" width="10" height="10" transform="rotate(45 ${sx} ${cy})" fill="var(--text)" stroke="var(--surface)" stroke-width="1"><title>Spec complete ${fmtDate(r.gantt_spec)}</title></rect>`;
     }
     // delivery dot
     bars += `<circle cx="${xd}" cy="${cy}" r="5" fill="#ED8B00" stroke="var(--surface)" stroke-width="1.5"><title>Delivery ${fmtDate(r.gantt_delivery)}</title></circle>`;
