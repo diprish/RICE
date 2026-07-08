@@ -116,6 +116,11 @@ COLUMN_MAP = {
     "Dev Start Date - Actual": "dev_start_actual",
     "Build + UT Completion Date - P": "build_planned",
     "Build + UT Completion Date - A": "build_actual",
+    # Newer workbooks renamed the build-completion columns to "Dev + UT …".
+    # These drive delivery-date → phase assignment; without them every object
+    # falls through to "Unscheduled". Kept alongside the older names above.
+    "Dev+ UT Completion Date - Planned": "build_planned",
+    "Dev + UT Completion Date - Actual": "build_actual",
     "Dev %": "dev_pct_raw",
     "Dev Status": "dev_status",
     "FUT Start Date - Actual": "fut_start_actual",
