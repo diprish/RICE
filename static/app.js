@@ -96,6 +96,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initTopbar();
   initFilters();
   initPlanToggle();
+  initResourcePlan();
   initModal();
   $("#exportBtn").addEventListener("click", exportCSV);
   $("#reuploadBtn").addEventListener("click", () => {
@@ -116,6 +117,7 @@ function initTheme() {
     document.documentElement.setAttribute("data-theme", cur);
     try { localStorage.setItem("rice-theme", cur); } catch {}
     if (State.data) { renderTypeCards(State.filtered); if (State.planView === "gantt") renderGantt(State.filtered); }
+    if (State.rp && State.rp.plan) renderResourcePlan();
   });
 }
 
@@ -188,6 +190,7 @@ async function loadData() {
       `Source sheet: ${j.source_sheet} · ${j.record_count} objects · generated ${j.generated_at.replace("T", " ")}`;
     $("#brandSub").textContent = `${j.summary.total_in_scope} in-scope of ${j.record_count} RICE objects`;
     applyFilters();
+    loadResourcePlan();
   } catch (e) {
     toast("Failed to load data: " + e.message);
   }
@@ -1233,6 +1236,190 @@ function openModal(title, list, detailed) {
   $("#modal").classList.remove("hidden");
 }
 function closeModal() { $("#modal").classList.add("hidden"); }
+
+/* ============================================================
+   RESOURCE PLAN — fixed scope (Deloitte · In Scope · ≠ARCS · no
+   Conversions), independent of the dashboard filters above.
+   ============================================================ */
+const RP_SCENARIOS = ["aggressive", "optimized", "conservative", "two_wave"];
+State.rp = { plan: null, scenario: "optimized" };
+
+function initResourcePlan() {
+  let t;
+  const reload = () => { clearTimeout(t); t = setTimeout(loadResourcePlan, 450); };
+  $$("#rpControls input").forEach(i => i.addEventListener("input", reload));
+}
+
+async function loadResourcePlan() {
+  const q = new URLSearchParams();
+  const put = (id, key) => { const v = $(id).value; if (v !== "") q.set(key, v); };
+  put("#rpTeam", "current_team");
+  put("#rpHpw", "hours_per_week");
+  put("#rpRampWeeks", "ramp_weeks");
+  put("#rpRampPct", "ramp_pct");
+  put("#rpCont", "contingency_pct");
+  put("#rpBuffer", "buffer_days");
+  try {
+    const r = await fetch("/api/resource-plan?" + q.toString());
+    const j = await r.json();
+    if (j.error) { toast("Resource plan: " + j.message); return; }
+    State.rp.plan = j;
+    $("#rpTeam").placeholder = `auto (${j.params.current_team})`;
+    renderResourcePlan();
+  } catch (e) {
+    toast("Resource plan failed: " + e.message);
+  }
+}
+
+function renderResourcePlan() {
+  const plan = State.rp.plan;
+  if (!plan) return;
+  const sc = plan.scenarios[State.rp.scenario];
+  const scope = plan.scope;
+  $("#rpScopeNote").textContent =
+    `— ${scope.description} · ${scope.open} open of ${scope.objects} objects · ${fmtNum(scope.planned_hours)} hrs remaining` +
+    (scope.estimated_objects ? ` · ${scope.estimated_objects} with estimated hours` : "");
+
+  $("#rpScenarioSeg").innerHTML = RP_SCENARIOS.map(key =>
+    `<button data-sc="${key}" class="${key === State.rp.scenario ? "active" : ""}">${plan.scenarios[key].label}</button>`).join("");
+  $$("#rpScenarioSeg button").forEach(b =>
+    b.addEventListener("click", () => { State.rp.scenario = b.dataset.sc; renderResourcePlan(); }));
+
+  const k = sc.kpis;
+  $("#rpDesc").innerHTML =
+    `<span class="rp-flag ${k.feasible ? "ok" : "bad"}">${k.feasible ? "✓ Feasible" : "✕ Target missed"}</span> ${esc(sc.description)}` +
+    (k.feasible ? "" : ` — <b>${k.misses}</b> objects (${fmtNum(k.late_hours)} hrs) cannot meet their deadline at this onboarding cadence; see the misses list below.`);
+
+  const buf = k.buffer_bdays;
+  const cards = [
+    ["Peak team", k.peak_team, `${k.existing_team} current + ${k.onboarded} onboarded`, ""],
+    ["Onboards", k.onboarded, `max ${sc.max_onboards_per_week}/week, earliest-needed first`, ""],
+    ["Finish", fmtDate(k.finish), buf == null ? "" : (buf >= 0 ? `${buf} working days before SIT 1` : `${-buf} working days past SIT 1`), buf != null && buf < 0 ? "bad" : "ok"],
+    ["Planned hours", fmtNum(k.hours), `${k.objects} objects${sc.contingency_pct ? ` · incl. +${sc.contingency_pct}% contingency` : ""}`, ""],
+    ["Deadline misses", k.misses, k.misses ? `${fmtNum(k.late_hours)} hrs land late` : "everything on time", k.misses ? "bad" : "ok"],
+    ["Avg utilization", k.avg_utilization + "%", "onboard → roll-off", ""],
+  ];
+  $("#rpKpis").innerHTML = cards.map(([l, v, s, cls]) =>
+    `<div class="card"><div class="card-label">${l}</div>
+     <div class="card-value ${cls}">${v}</div>
+     <div class="card-break"><span class="muted">${s}</span></div></div>`).join("");
+
+  renderRpChart(plan, sc);
+  renderRpCompare(plan);
+  renderRpTimeline(plan, sc);
+  renderRpMisses(sc);
+}
+
+function renderRpChart(plan, sc) {
+  const css = getComputedStyle(document.documentElement);
+  const text2 = css.getPropertyValue("--text-2").trim();
+  const grid = css.getPropertyValue("--border").trim();
+  const labels = sc.weekly.map(w => fmtDate(w.week));
+  const colors = sc.weekly.map(w =>
+    w.week < plan.sit1_start ? "#5b52e0" : (w.week < plan.sit2_start ? "#ED8B00" : "#DA291C"));
+  if (State.charts.rpRamp) State.charts.rpRamp.destroy();
+  State.charts.rpRamp = new Chart($("#rpRamp"), {
+    type: "bar",
+    data: { labels, datasets: [{ data: sc.weekly.map(w => w.active), backgroundColor: colors, borderRadius: 3 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => `${c.parsed.y} active developer${c.parsed.y === 1 ? "" : "s"}`,
+            afterLabel: c => {
+              const w = sc.weekly[c.dataIndex];
+              return (w.onboards ? `+${w.onboards} onboarding this week\n` : "") +
+                `capacity ${Math.round(w.capacity)} h · scheduled ${Math.round(w.scheduled)} h`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { color: text2, maxRotation: 60, autoSkip: true }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { color: text2, precision: 0 }, grid: { color: grid } },
+      },
+    },
+  });
+}
+
+function renderRpCompare(plan) {
+  const rows = RP_SCENARIOS.map(key => {
+    const s = plan.scenarios[key], k = s.kpis;
+    const buf = k.buffer_bdays;
+    return `<tr class="${key === State.rp.scenario ? "sel" : ""}" data-sc="${key}">
+      <td><b>${s.label}</b></td><td>${k.peak_team}</td><td>${k.onboarded}</td>
+      <td>${fmtDate(k.finish)}</td>
+      <td class="${buf != null && buf >= 0 ? "ok" : "bad"}">${buf == null ? "—" : (buf >= 0 ? "+" : "") + buf}</td>
+      <td class="${k.misses ? "bad" : "ok"}">${k.misses}</td>
+      <td>${fmtNum(k.late_hours)}</td><td>${fmtNum(k.hours)}</td><td>${k.avg_utilization}%</td></tr>`;
+  }).join("");
+  $("#rpCompare").innerHTML = `<div class="rp-table-scroll"><table class="rp-table"><thead><tr>
+    <th>Scenario</th><th>Peak team</th><th>Onboards</th><th>Finish</th><th>Buffer (bdays)</th>
+    <th>Misses</th><th>Late hrs</th><th>Planned hrs</th><th>Util</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+  $$("#rpCompare tr[data-sc]").forEach(tr =>
+    tr.addEventListener("click", () => { State.rp.scenario = tr.dataset.sc; renderResourcePlan(); }));
+}
+
+function renderRpTimeline(plan, sc) {
+  const start = parseISO(plan.plan_start);
+  let end = parseISO(plan.sit2_start);
+  sc.resources.forEach(r => r.assignments.forEach(a => {
+    const e = parseISO(a.end);
+    if (e > end) end = e;
+  }));
+  end = new Date(end); end.setDate(end.getDate() + 10);
+  const span = end - start;
+  const pct = iso => 100 * (parseISO(iso) - start) / span;
+
+  const ticks = [];
+  const t = new Date(start); t.setDate(1); t.setMonth(t.getMonth() + 1);
+  while (t < end) {
+    ticks.push(`<span class="rp-tick" style="left:${(100 * (t - start) / span).toFixed(2)}%">${t.toLocaleDateString(undefined, { month: "short" })}</span>`);
+    t.setMonth(t.getMonth() + 1);
+  }
+  const mark = (iso, label, cls) =>
+    `<i class="rp-mark ${cls}" style="left:${pct(iso).toFixed(2)}%"><b>${label}</b></i>`;
+
+  const rows = sc.resources.map(r => {
+    const bars = r.assignments.map(a => {
+      const l = pct(a.start), w = Math.max(pct(a.end) - l, 0.5);
+      return `<div class="rp-bar ${a.late ? "late" : ""}" data-id="${esc(a.rice_id)}"
+        style="left:${l.toFixed(2)}%;width:${w.toFixed(2)}%;background:${TYPE_COLOR[a.rice_type] || "#75787B"}"
+        title="${esc(a.rice_id)} · ${esc(a.object_name)} · ${esc(a.complexity)} · ${a.hours}h${a.estimated ? " (estimated)" : ""} · ${fmtDate(a.start)} → ${fmtDate(a.end)}${a.late ? " · misses " + fmtDate(a.deadline) + " deadline" : ""}">${esc(a.rice_id)}</div>`;
+    }).join("");
+    return `<div class="rp-row">
+      <div class="rp-lbl"><b>${esc(r.name)}</b><span>${fmtDate(r.onboard)} → ${fmtDate(r.rolloff)} · ${r.utilization}%</span></div>
+      <div class="rp-track">${bars}</div>
+    </div>`;
+  }).join("");
+
+  const legend = ["Integration", "Extension", "Report"]
+    .map(ty => `<span><i style="background:${TYPE_COLOR[ty]}"></i> ${ty}</span>`).join("") +
+    `<span><i class="late-demo"></i> misses deadline</span>`;
+  $("#rpTimeline").innerHTML =
+    `<div class="rp-tl-legend">${legend}</div>
+     <div class="rp-tl">
+       <div class="rp-overlay">${ticks.join("")}${mark(plan.sit1_start, "SIT 1", "sit1")}${mark(plan.sit2_start, "SIT 2", "sit2")}</div>
+       ${rows}
+     </div>`;
+  $$(".rp-bar", $("#rpTimeline")).forEach(b => b.addEventListener("click", () => {
+    const rec = ((State.data && State.data.records) || []).filter(x => x.rice_id === b.dataset.id);
+    if (rec.length) openModal(rec[0].rice_id + " — " + rec[0].object_name, rec, true);
+  }));
+}
+
+function renderRpMisses(sc) {
+  if (!sc.misses.length) { $("#rpMisses").innerHTML = ""; return; }
+  $("#rpMisses").innerHTML =
+    `<h3 class="sub-title">Objects missing their deadline <span class="muted">— ${sc.misses.length} objects · schedule more onboards or move them to a later wave</span></h3>
+     <div class="rp-miss-list">` + sc.misses.map(m =>
+      `<div class="rp-miss"><b>${esc(m.rice_id)}</b> ${esc(m.object_name)}
+        <span class="muted">${esc(m.rice_type)} · ${m.hours}h · lands ${fmtDate(m.finish)} vs deadline ${fmtDate(m.deadline)}</span></div>`
+    ).join("") + `</div>`;
+}
 
 /* ============================================================
    CSV EXPORT (filtered set)
