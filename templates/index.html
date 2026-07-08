@@ -34,6 +34,7 @@
     <a href="#sec-sprints">Sprints</a>
     <a href="#sec-plan">Delivery Plan</a>
     <a href="#sec-capacity">Capacity</a>
+    <a href="#sec-resplan">Resource Plan</a>
     <a href="#sec-risk">Risk</a>
     <a href="#sec-owner">Owner Focus</a>
     <a href="#sec-matrix">Matrix</a>
@@ -145,6 +146,36 @@
   <section id="sec-capacity" class="block">
     <h2 class="block-title">Resource Capacity <span class="muted">— developers needed per week (⌈hours ÷ 45⌉)</span></h2>
     <div id="capacityHeat" class="capacity-wrap"></div>
+  </section>
+
+  <!-- RESOURCE PLAN -->
+  <section id="sec-resplan" class="block">
+    <div class="block-head">
+      <div class="bh-left">
+        <h2 class="block-title">Resource Plan <span class="muted" id="rpScopeNote"></span></h2>
+      </div>
+      <div class="seg" id="rpScenarioSeg"></div>
+    </div>
+    <div class="rp-controls" id="rpControls">
+      <label>Current team <input type="number" id="rpTeam" min="0" max="40" placeholder="auto" /></label>
+      <label>Hours / week <input type="number" id="rpHpw" min="10" max="80" value="45" /></label>
+      <label>Ramp-up weeks <input type="number" id="rpRampWeeks" min="0" max="8" value="2" /></label>
+      <label>Ramp productivity % <input type="number" id="rpRampPct" min="10" max="100" value="50" /></label>
+      <label>Contingency % <input type="number" id="rpCont" min="0" max="100" value="15" /></label>
+      <label>Buffer days <input type="number" id="rpBuffer" min="0" max="40" value="10" /></label>
+      <span class="muted" id="rpParamsNote"></span>
+    </div>
+    <div id="rpDesc" class="rp-desc"></div>
+    <div id="rpKpis" class="cards rp-kpis"></div>
+    <div class="rp-chart-card">
+      <h3 class="sub-title">Team ramp — active developers per week <span class="muted">· tooltip shows onboards &amp; hours</span></h3>
+      <div class="rp-chart-wrap"><canvas id="rpRamp"></canvas></div>
+    </div>
+    <h3 class="sub-title">Scenario comparison <span class="muted">— click a row to switch</span></h3>
+    <div id="rpCompare" class="rp-compare"></div>
+    <h3 class="sub-title">Assignment timeline <span class="muted">— who builds what, in priority order · click a bar for details</span></h3>
+    <div id="rpTimeline" class="rp-timeline-wrap"></div>
+    <div id="rpMisses"></div>
   </section>
 
   <!-- RISK -->

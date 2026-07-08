@@ -478,6 +478,371 @@ def _summary(records):
 
 
 # --------------------------------------------------------------------------- #
+# Resource planning
+# --------------------------------------------------------------------------- #
+# Fixed planning scope: Deloitte-accountable, in-scope objects, excluding the
+# ARCS module (the "ARCS (ADP)" module is a different module and stays in) and
+# excluding Conversions. Blocked/delayed objects are schedulable like any other.
+SIT1_START = pd.Timestamp("2026-09-28")
+SIT2_START = pd.Timestamp("2026-11-09")
+MAX_PLAN_RESOURCES = 40
+
+# Queue priority: complexity dominates (start complex work first to absorb
+# delays), integrations get a strong boost, hours break ties.
+TYPE_PRIORITY = {"integration": 30, "extension": 15, "report": 0}
+COMPLEXITY_PRIORITY = {"very complex": 100, "complex": 80, "medium": 50, "simple": 20}
+
+
+def _plan_scope(records):
+    out = []
+    for r in records:
+        if (r["accountable_org"] or "").strip().lower() != "deloitte":
+            continue
+        if (r["in_scope"] or "").strip().lower() != "yes":
+            continue
+        if (r["module"] or "").strip().upper() == "ARCS":
+            continue
+        if (r["rice_type"] or "").strip().lower() == "conversion":
+            continue
+        out.append(r)
+    return out
+
+
+def _remaining_hours(r):
+    """Remaining build effort. hours_left already credits Dev % progress."""
+    if r["hours_left"] is not None:
+        return r["hours_left"]
+    return r["build_hours"]
+
+
+def _plan_items(scope):
+    """Split scope into schedulable items / done / not-applicable. Objects with
+    no build-hours estimate get the median hours of their complexity tier."""
+    # medians for defaulting, computed from the scoped population
+    by_cx = {}
+    all_hours = []
+    for r in scope:
+        if r["build_hours"]:
+            by_cx.setdefault((r["complexity"] or "").strip().lower(), []).append(r["build_hours"])
+            all_hours.append(r["build_hours"])
+    med = {k: float(np.median(v)) for k, v in by_cx.items()}
+    overall_med = float(np.median(all_hours)) if all_hours else HOURS_PER_DEV_WEEK * 2
+
+    items, done, not_applicable = [], [], []
+    for r in scope:
+        if (r["dev_status"] or "").strip().lower() == "not applicable":
+            not_applicable.append(r)
+            continue
+        if (r["build_status"] or "").strip().lower() == "completed":
+            done.append(r)
+            continue
+        rem = _remaining_hours(r)
+        estimated = False
+        if not rem or rem <= 0:
+            if r["build_hours"] is None:
+                cx = (r["complexity"] or "").strip().lower()
+                rem = med.get(cx, overall_med)
+                estimated = True
+            else:
+                done.append(r)  # effort fully consumed
+                continue
+        cx = (r["complexity"] or "").strip().lower()
+        priority = (COMPLEXITY_PRIORITY.get(cx, 50)
+                    + TYPE_PRIORITY.get((r["rice_type"] or "").strip().lower(), 0))
+        items.append({
+            "rice_id": r["rice_id"],
+            "object_name": r["object_name"],
+            "rice_type": r["rice_type"],
+            "module": r["module"],
+            "complexity": r["complexity"] or "Unrated",
+            "hours": float(rem),
+            "estimated": estimated,
+            "priority": priority,
+        })
+    return items, done, not_applicable
+
+
+def _simulate(items, roster, cal, hpw, ramp_pct):
+    """Greedy list scheduler. items are priority-ordered; each resource pulls
+    the next queue item when free. roster is [(onboard_day, ramp_days)] —
+    existing team members carry ramp_days=0. Day indices are business days."""
+    daily = hpw / 5.0
+    pending = list(items)
+    res = [{"onboard": ob, "ramp": rd, "cur": None, "assignments": []}
+           for ob, rd in sorted(roster)]
+    finish = {}
+    weeks = len(cal) // 5 + 1
+    wk_capacity = [0.0] * weeks
+    wk_scheduled = [0.0] * weeks
+    last_day = 0
+    for d in range(len(cal)):
+        if not pending and all(rs["cur"] is None for rs in res):
+            break
+        for rs in res:
+            if d < rs["onboard"]:
+                continue
+            if rs["cur"] is None and not pending:
+                continue
+            rate = daily * (ramp_pct if d - rs["onboard"] < rs["ramp"] else 1.0)
+            wk_capacity[d // 5] += rate
+            avail = rate
+            while avail > 1e-9:
+                if rs["cur"] is None:
+                    if not pending:
+                        break
+                    it = pending.pop(0)
+                    rs["cur"] = {"item": it, "rem": it["hours"], "start": d}
+                take = min(avail, rs["cur"]["rem"])
+                rs["cur"]["rem"] -= take
+                avail -= take
+                if rs["cur"]["rem"] <= 1e-9:
+                    a = rs["cur"]
+                    rs["assignments"].append({"item": a["item"], "start": a["start"], "end": d})
+                    finish[a["item"]["rice_id"]] = d
+                    last_day = max(last_day, d)
+                    rs["cur"] = None
+            wk_scheduled[d // 5] += rate - max(avail, 0.0)
+    unfinished = [rs["cur"]["item"]["rice_id"] for rs in res if rs["cur"]] + \
+                 [it["rice_id"] for it in pending]
+    return {"resources": res, "finish": finish, "unfinished": unfinished,
+            "last_day": last_day, "wk_capacity": wk_capacity, "wk_scheduled": wk_scheduled}
+
+
+def _score(sim, items, deadlines):
+    """(deadline misses, total business days late, overall finish) — lower is better."""
+    miss, late = 0, 0
+    for it in items:
+        fin = sim["finish"].get(it["rice_id"])
+        dl = deadlines[it["rice_id"]]
+        if fin is None:
+            miss, late = miss + 1, late + 120
+        elif fin > dl:
+            miss, late = miss + 1, late + (fin - dl)
+    return (miss, late, sim["last_day"])
+
+
+def _run_scenario(items, deadlines, cal, cfg, hpw, ramp_days, ramp_pct, current_team):
+    """Hire-when-needed planning: onboard at most cap resources per week,
+    starting as early as the math demands, stopping once every deadline holds
+    — or once further hires stop reducing lateness (deadlines unreachable)."""
+    cap = cfg["max_onboards_per_week"]
+    base = [(0, 0)] * current_team          # existing team: no ramp-up
+    hires, week, stale = [], 0, 0
+    sim = _simulate(items, base, cal, hpw, ramp_pct)
+    score = _score(sim, items, deadlines)
+    best = (list(hires), sim, score)
+    while score[0] > 0 and len(hires) < MAX_PLAN_RESOURCES and week < 52 and stale < 4:
+        if sum(1 for h in hires if h[0] // 5 == week) < cap:
+            hires.append((week * 5, ramp_days))
+            sim = _simulate(items, base + hires, cal, hpw, ramp_pct)
+            score = _score(sim, items, deadlines)
+            if score < best[2]:
+                best, stale = (list(hires), sim, score), 0
+            else:
+                stale += 1
+        else:
+            week += 1
+    return best[0], best[1]
+
+
+def _iso(cal, d):
+    d = min(max(d, 0), len(cal) - 1)
+    return cal[d].strftime("%Y-%m-%d")
+
+
+def _scenario_payload(label, description, items, deadlines, cal, cfg, hpw, ramp_days, ramp_pct, current_team):
+    hires, sim = _run_scenario(items, deadlines, cal, cfg, hpw, ramp_days, ramp_pct, current_team)
+    daily = hpw / 5.0
+
+    resources = []
+    for i, rs in enumerate(sim["resources"]):
+        if not rs["assignments"] and rs["cur"] is None:
+            continue
+        existing = i < current_team
+        ends = [a["end"] for a in rs["assignments"]]
+        rolloff = max(ends) if ends else rs["onboard"]
+        cap_hours = sum(daily * (ramp_pct if d - rs["onboard"] < rs["ramp"] else 1.0)
+                        for d in range(rs["onboard"], rolloff + 1))
+        done_hours = sum(a["item"]["hours"] for a in rs["assignments"])
+        resources.append({
+            "name": f"Dev {i + 1}" + (" (current)" if existing else ""),
+            "existing": existing,
+            "onboard": _iso(cal, rs["onboard"]),
+            "rolloff": _iso(cal, rolloff),
+            "hours": round(done_hours, 1),
+            "utilization": round(100.0 * done_hours / cap_hours, 1) if cap_hours else 0.0,
+            "assignments": [{
+                "rice_id": a["item"]["rice_id"],
+                "object_name": a["item"]["object_name"],
+                "rice_type": a["item"]["rice_type"],
+                "complexity": a["item"]["complexity"],
+                "hours": round(a["item"]["hours"], 1),
+                "estimated": a["item"]["estimated"],
+                "start": _iso(cal, a["start"]),
+                "end": _iso(cal, a["end"]),
+                "deadline": _iso(cal, deadlines[a["item"]["rice_id"]]),
+                "late": a["end"] > deadlines[a["item"]["rice_id"]],
+            } for a in rs["assignments"]],
+        })
+
+    misses = []
+    for it in items:
+        fin = sim["finish"].get(it["rice_id"])
+        dl = deadlines[it["rice_id"]]
+        if fin is None or fin > dl:
+            misses.append({
+                "rice_id": it["rice_id"], "object_name": it["object_name"],
+                "rice_type": it["rice_type"], "hours": round(it["hours"], 1),
+                "finish": _iso(cal, fin) if fin is not None else None,
+                "deadline": _iso(cal, dl),
+            })
+
+    # weekly ramp series (resource active from onboard to rolloff)
+    spans = []
+    for i, rs in enumerate(sim["resources"]):
+        ends = [a["end"] for a in rs["assignments"]]
+        if ends:
+            spans.append((rs["onboard"], max(ends)))
+    n_weeks = (max((e for _, e in spans), default=0) // 5) + 1
+    weekly = []
+    for w in range(n_weeks):
+        weekly.append({
+            "week": _iso(cal, w * 5),
+            "active": sum(1 for s, e in spans if s <= w * 5 + 4 and e >= w * 5),
+            "onboards": sum(1 for h in hires if h[0] // 5 == w),
+            "capacity": round(sim["wk_capacity"][w], 1),
+            "scheduled": round(sim["wk_scheduled"][w], 1),
+        })
+
+    finish_day = sim["last_day"]
+    utils = [r["utilization"] for r in resources]
+    return {
+        "label": label,
+        "description": description,
+        "max_onboards_per_week": cfg["max_onboards_per_week"],
+        "contingency_pct": cfg.get("contingency_pct", 0),
+        "kpis": {
+            "peak_team": max((wk["active"] for wk in weekly), default=0),
+            "onboarded": len(hires),
+            "existing_team": current_team,
+            "finish": _iso(cal, finish_day) if not sim["unfinished"] else None,
+            "buffer_bdays": int(np.busday_count(cal[min(finish_day, len(cal) - 1)].date(),
+                                                SIT1_START.date())) if not sim["unfinished"] else None,
+            "hours": round(sum(it["hours"] for it in items), 1),
+            "objects": len(items),
+            "feasible": len(misses) == 0,
+            "misses": len(misses),
+            "late_hours": round(sum(m["hours"] for m in misses), 1),
+            "avg_utilization": round(float(np.mean(utils)), 1) if utils else 0.0,
+        },
+        "weekly": weekly,
+        "resources": resources,
+        "misses": misses,
+    }
+
+
+def build_resource_plan(records, params):
+    scope = _plan_scope(records)
+    items, done, not_applicable = _plan_items(scope)
+    items.sort(key=lambda it: (-it["priority"], -it["hours"]))
+
+    hpw = params["hours_per_week"]
+    ramp_days = int(params["ramp_weeks"] * 5)
+    ramp_pct = params["ramp_pct"] / 100.0
+    contingency = params["contingency_pct"] / 100.0
+    buffer_days = int(params["buffer_days"])
+
+    today = pd.Timestamp(dt.date.today())
+    start = today if np.is_busday(today.date()) else pd.Timestamp(np.busday_offset(today.date(), 0, roll="forward"))
+    cal = pd.bdate_range(start, periods=560)
+    sit1_dl = max(int(cal.searchsorted(SIT1_START)) - 1, 0)   # last bday before SIT 1
+    sit2_dl = max(int(cal.searchsorted(SIT2_START)) - 1, 0)
+
+    def all_by(day):
+        return {it["rice_id"]: day for it in items}
+
+    def inflated(factor):
+        return [{**it, "hours": it["hours"] * (1.0 + factor)} for it in items]
+
+    # Two-wave: integrations, extensions and complex work must land before
+    # SIT 1; simple/medium reports may land in the SIT1→SIT2 window.
+    def wave_of(it):
+        if (it["rice_type"] or "").lower() in ("integration", "extension"):
+            return 1
+        if (it["complexity"] or "").lower() in ("complex", "very complex"):
+            return 1
+        return 2
+
+    wave_items = sorted(items, key=lambda it: (wave_of(it), -it["priority"], -it["hours"]))
+    wave_deadlines = {it["rice_id"]: (sit1_dl if wave_of(it) == 1 else sit2_dl) for it in items}
+
+    # Existing team default: one dev per open object with active dev work.
+    active_wip = sum(
+        1 for r in scope
+        if (r["build_status"] or "").strip().lower() != "completed"
+        and (r["dev_status"] or "").strip().lower() in ("in progress", "delayed")
+    )
+    current_team = int(params["current_team"]) if params["current_team"] >= 0 else max(active_wip, 1)
+    params = {**params, "current_team": current_team}
+
+    scenarios = {
+        "aggressive": _scenario_payload(
+            "Aggressive", f"Everything done {buffer_days} working days before SIT 1 · up to 2 onboards/week",
+            items, all_by(max(sit1_dl - buffer_days, 0)), cal,
+            {"max_onboards_per_week": 2}, hpw, ramp_days, ramp_pct, current_team),
+        "optimized": _scenario_payload(
+            "Optimized", "Everything done just-in-time for SIT 1 · max 1 onboard/week · smallest team",
+            items, all_by(sit1_dl), cal,
+            {"max_onboards_per_week": 1}, hpw, ramp_days, ramp_pct, current_team),
+        "conservative": _scenario_payload(
+            "Conservative", f"SIT 1 deadline with +{params['contingency_pct']:.0f}% effort contingency baked into every estimate",
+            inflated(contingency), all_by(sit1_dl), cal,
+            {"max_onboards_per_week": 1, "contingency_pct": params["contingency_pct"]}, hpw, ramp_days, ramp_pct, current_team),
+        "two_wave": _scenario_payload(
+            "Two-Wave", "Integrations, extensions & complex work before SIT 1 · simple/medium reports may land before SIT 2",
+            wave_items, wave_deadlines, cal,
+            {"max_onboards_per_week": 1}, hpw, ramp_days, ramp_pct, current_team),
+    }
+
+    est_count = sum(1 for it in items if it["estimated"])
+    return {
+        "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "params": params,
+        "plan_start": start.strftime("%Y-%m-%d"),
+        "sit1_start": SIT1_START.strftime("%Y-%m-%d"),
+        "sit2_start": SIT2_START.strftime("%Y-%m-%d"),
+        "scope": {
+            "description": "Deloitte · In Scope · Module ≠ ARCS · no Conversions",
+            "objects": len(scope),
+            "open": len(items),
+            "completed": len(done),
+            "not_applicable": len(not_applicable),
+            "planned_hours": round(sum(it["hours"] for it in items), 1),
+            "estimated_objects": est_count,
+        },
+        "scenarios": scenarios,
+    }
+
+
+def _plan_params():
+    def num(name, default, lo, hi):
+        try:
+            v = float(request.args.get(name, default))
+        except (TypeError, ValueError):
+            v = default
+        return max(lo, min(hi, v))
+    return {
+        "hours_per_week": num("hours_per_week", HOURS_PER_DEV_WEEK, 10, 80),
+        "ramp_weeks": num("ramp_weeks", 2, 0, 8),
+        "ramp_pct": num("ramp_pct", 50, 10, 100),
+        "contingency_pct": num("contingency_pct", 15, 0, 100),
+        "buffer_days": num("buffer_days", 10, 0, 40),
+        # -1 = auto: derive from objects with dev work currently in flight
+        "current_team": num("current_team", -1, -1, MAX_PLAN_RESOURCES),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
 @app.route("/")
@@ -494,6 +859,18 @@ def api_data():
     except Exception as exc:  # never crash — report cleanly
         return jsonify({"error": "processing_error", "message": str(exc)}), 500
     return jsonify(payload)
+
+
+@app.route("/api/resource-plan")
+def api_resource_plan():
+    if not os.path.exists(DATA_FILE):
+        return jsonify({"error": "no_data", "message": "No data file found. Please upload a workbook."}), 404
+    try:
+        payload = process(DATA_FILE)
+        plan = build_resource_plan(payload["records"], _plan_params())
+    except Exception as exc:
+        return jsonify({"error": "processing_error", "message": str(exc)}), 500
+    return jsonify(plan)
 
 
 @app.route("/api/upload", methods=["POST"])
