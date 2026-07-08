@@ -672,6 +672,13 @@ function renderSprintSummary(recs) {
   groups["Unscheduled"] = [];
   recs.forEach(r => { if (groups[r.assigned_sprint]) groups[r.assigned_sprint].push(r); });
 
+  // Shared color key — the bar segments across every card use statusColor(),
+  // so one legend of the statuses actually present explains them all.
+  const present = statusOrder(recs);
+  $("#sprintLegend").innerHTML = present.length
+    ? present.map(s => `<span><i style="background:${statusColor(s)}"></i>${esc(s)}</span>`).join("")
+    : "";
+
   const cards = phases.concat([{ name: "Unscheduled", type: "Unscheduled", status: "—", start: null, end: null }]);
   $("#sprintSummary").innerHTML = cards.map(p => {
     const list = groups[p.name] || [];
