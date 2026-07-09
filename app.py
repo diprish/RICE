@@ -114,11 +114,13 @@ COLUMN_MAP = {
     "Technical Owner": "technical_owner",
     "Dev Start Date - Planned": "dev_start_planned",
     "Dev Start Date - Actual": "dev_start_actual",
+    # Build/dev-complete milestone. Older workbooks label it "Build + UT
+    # Completion Date"; newer ones renamed it to "Dev + UT Completion Date"
+    # (with inconsistent spacing between the two columns). These drive the
+    # delivery date and sprint assignment — a mismatch dumps every object into
+    # "Unscheduled" — so we map both spellings.
     "Build + UT Completion Date - P": "build_planned",
     "Build + UT Completion Date - A": "build_actual",
-    # Newer workbooks renamed the build-completion columns to "Dev + UT …".
-    # These drive delivery-date → phase assignment; without them every object
-    # falls through to "Unscheduled". Kept alongside the older names above.
     "Dev+ UT Completion Date - Planned": "build_planned",
     "Dev + UT Completion Date - Actual": "build_actual",
     "Dev %": "dev_pct_raw",
@@ -974,5 +976,6 @@ def health():
 
 
 if __name__ == "__main__":
-    print(" * RICE Tracker dashboard starting on http://127.0.0.1:5000")
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    print(f" * RICE Tracker dashboard starting on http://127.0.0.1:{port}")
+    app.run(host="127.0.0.1", port=port, debug=True)
