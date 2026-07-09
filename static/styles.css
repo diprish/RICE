@@ -159,6 +159,11 @@ code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px;
   border: 1px solid var(--border); border-radius: 18px; padding: 24px 26px;
   box-shadow: 0 1px 2px rgba(20,26,40,.04), 0 12px 34px rgba(20,26,40,.06); }
 .fb-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.fb-head-right { display: flex; align-items: center; gap: 14px; }
+.fb-clear { font: 600 12px var(--sans, inherit); letter-spacing: .02em; color: var(--muted, #6b7280);
+  background: none; border: none; padding: 4px 6px; cursor: pointer; border-radius: 6px; transition: color .12s, background .12s; }
+.fb-clear:hover { color: #d64545; background: rgba(214, 69, 69, .08); }
+.fb-clear[hidden] { display: none; }
 .fb-title { font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #8a93a4; }
 .fb-count { font: 500 13px var(--mono); color: var(--text-2); }
 .fb-count span { color: var(--text); font-weight: 600; }
@@ -418,9 +423,45 @@ table.heat td.lbl, table.heat th.lbl { text-align: left; font-weight: 700; posit
   padding: 10px 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .owner-name { font-weight: 800; }
 .owner-counts { display: inline-flex; gap: 6px; flex-shrink: 0; }
+.count-chip { display: inline-block; min-width: 20px; text-align: center; font-family: var(--mono);
+  font-size: 11px; font-weight: 700; border-radius: 20px; padding: 1px 8px; margin-left: 6px; vertical-align: middle; }
+.count-chip.red { background: rgba(218,41,28,.12); color: var(--dl-red); }
+.count-chip.amber { background: rgba(237,139,0,.16); color: var(--dl-orange); }
 .oc-badge { font-size: 10.5px; font-weight: 700; border-radius: 20px; padding: 2px 9px; white-space: nowrap; }
 .oc-badge.delayed { background: rgba(218,41,28,.12); color: var(--dl-red); }
 .oc-badge.due { background: rgba(237,139,0,.16); color: var(--dl-orange); }
+
+/* ---------- spec deadlines (dense table) ---------- */
+.sd-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; }
+.sd-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+  box-shadow: var(--shadow); overflow: hidden; }
+.sd-head { display: flex; align-items: center; gap: 4px; padding: 11px 16px;
+  background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.sd-title { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--text-2); }
+.sd-scroll { max-height: 560px; overflow-y: auto; overflow-x: hidden; }
+.sd-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.sd-table td { padding: 10px 12px; vertical-align: middle; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.sd-row { border-bottom: 1px solid var(--border); cursor: pointer; }
+.sd-row:last-child { border-bottom: none; }
+.sd-row:hover { background: var(--surface-2); }
+.sd-table td.sd-name { font-weight: 700; color: var(--text); white-space: normal;   /* takes remaining width, wraps to avoid trimming */
+  overflow: visible; text-overflow: clip; line-height: 1.3; }
+.sd-idmod { width: 126px; }
+.sd-idmod .sd-id { display: block; font-family: var(--mono); font-size: 11.5px; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; }
+.sd-idmod .sd-mod { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; }
+.sd-date { width: 90px; color: var(--text-2); }
+.sd-owner { width: 120px; color: var(--text-2); }
+.sd-av + .sd-oname { margin-left: 8px; }
+.sd-oname { color: var(--text-2); }
+.sd-av { width: 24px; height: 24px; border-radius: 50%; color: #fff; font-size: 10px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; letter-spacing: .02em; vertical-align: middle; }
+.sd-age { width: 104px; text-align: right; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+.sd-age.delayed { color: var(--dl-red); }
+.sd-age.due { color: var(--dl-orange); }
+@media (max-width: 1100px) { .sd-cols { grid-template-columns: 1fr; } }
 .owner-items { display: flex; flex-direction: column; gap: 8px; padding: 12px; max-height: 460px; overflow-y: auto; }
 .reason-tags { display: inline-flex; gap: 5px; flex-wrap: wrap; flex-shrink: 0; }
 .ri-desc { font-size: 11.5px; color: var(--text-2); margin-top: 5px; line-height: 1.4; }

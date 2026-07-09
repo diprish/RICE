@@ -206,6 +206,16 @@ const FILTER_DIMS = [
   { key: "release", label: "Release" },
   { key: "sub_entity", label: "Sub Entity" },
 ];
+// Record field backing each multi-select dimension.
+const FILTER_FIELD = { org: "accountable_org", module: "module", release: "release", sub_entity: "sub_entity" };
+// Pseudo-option that selects records with no value for a dimension. The backend
+// strips blanks from the option lists, so unassigned items are otherwise unreachable.
+const BLANK_OPT = "(Blank)";
+// A record's value for a dimension, mapping empty/missing to the blank sentinel.
+function dimValue(rec, key) {
+  const v = rec[FILTER_FIELD[key]];
+  return (v === "" || v == null) ? BLANK_OPT : v;
+}
 // Selected values per multi-select dimension (empty set = "Any"). Scope is single-select.
 State.sel = { org: new Set(), module: new Set(), release: new Set(), sub_entity: new Set() };
 State.scope = "";
@@ -226,6 +236,7 @@ function initFilters() {
   const savedWrap = $(`.fpill-wrap[data-dim="saved"]`);
   $("[data-toggle]", savedWrap).addEventListener("click", (e) => { e.stopPropagation(); togglePopover(savedWrap); });
   $("#saveViewBtn").addEventListener("click", saveCurrentView);
+  $("#clearAllBtn").addEventListener("click", clearAllFilters);
   loadSavedViews();
 }
 
@@ -392,12 +403,27 @@ function populateFilterOptions(j) {
     release: (f.release || []).slice(),
     sub_entity: (f.sub_entity || []).slice(),
   };
+  // Surface a "(Blank)" option for any dimension that has unassigned records,
+  // so they can be selected (backend option lists exclude blanks).
+  const recs = j.records || [];
+  FILTER_DIMS.forEach(d => {
+    const opts = State.allOptions[d.key] || [];
+    if (recs.some(r => dimValue(r, d.key) === BLANK_OPT)) opts.push(BLANK_OPT);
+  });
   State.scopeOptions = (f.in_scope || []).slice();
 
   $("#fbPills").innerHTML = FILTER_DIMS.map(multiPillHTML).join("") + scopePillHTML();
   FILTER_DIMS.forEach(wireMultiPill);
   wireScopePill();
   updateAllPillLabels();
+}
+
+// Keep only the values that exist in the current data's option universe for a
+// dimension. Guards against stale selections (e.g. from a saved view) whose
+// values were renamed or removed from the source data since it was saved.
+function validSelection(key, values) {
+  const universe = new Set(State.allOptions[key] || []);
+  return (values || []).filter(v => universe.has(v));
 }
 
 const SEARCH_FIELDS = ["rice_id", "object_name", "description", "module", "source_system", "target_system",
@@ -412,6 +438,27 @@ function getBaseFilters() {
     scope: State.scope,
     search: ($("#fSearch").value || "").trim().toLowerCase(),
   };
+}
+
+// True when any filter (multi-select, scope, search, or quick pill) is active.
+function anyFilterActive() {
+  if (FILTER_DIMS.some(d => State.sel[d.key].size)) return true;
+  if (State.scope) return true;
+  if (($("#fSearch").value || "").trim()) return true;
+  return Object.keys(State.quick).some(k => State.quick[k]);
+}
+
+// Reset every filter back to "Any" and re-render the affected controls.
+function clearAllFilters() {
+  FILTER_DIMS.forEach(d => State.sel[d.key].clear());
+  State.scope = "";
+  State.quick = {};
+  const s = $("#fSearch");
+  if (s) s.value = "";
+  updateAllPillLabels();
+  renderScopeMenu();
+  FILTER_DIMS.forEach(d => renderMultiList(d, ""));
+  applyFilters();
 }
 
 function setQuick(obj) {
@@ -445,10 +492,10 @@ function applyFilters() {
   const f = getBaseFilters();
   const q = State.quick;
   State.filtered = State.data.records.filter(r => {
-    if (f.org.length && !f.org.includes(r.accountable_org)) return false;
-    if (f.module.length && !f.module.includes(r.module)) return false;
-    if (f.release.length && !f.release.includes(r.release)) return false;
-    if (f.sub_entity.length && !f.sub_entity.includes(r.sub_entity)) return false;
+    if (f.org.length && !f.org.includes(dimValue(r, "org"))) return false;
+    if (f.module.length && !f.module.includes(dimValue(r, "module"))) return false;
+    if (f.release.length && !f.release.includes(dimValue(r, "release"))) return false;
+    if (f.sub_entity.length && !f.sub_entity.includes(dimValue(r, "sub_entity"))) return false;
     if (f.scope && r.in_scope !== f.scope) return false;
     if (f.search) {
       const hay = SEARCH_FIELDS.map(k => r[k] || "").join(" ").toLowerCase();
@@ -461,6 +508,8 @@ function applyFilters() {
   });
   updateResultCount();
   renderQuickPills();
+  const clearBtn = $("#clearAllBtn");
+  if (clearBtn) clearBtn.hidden = !anyFilterActive();
   renderAll(State.filtered);
 }
 
@@ -538,11 +587,17 @@ async function deleteSavedView(name) {
 function applySavedView(name) {
   const v = SavedViews[name];
   if (!v) return;
+  let dropped = 0;
   ["org", "module", "release", "sub_entity"].forEach(k => {
-    State.sel[k] = new Set(v[k] || []);
+    const saved = v[k] || [];
+    const valid = validSelection(k, saved);
+    dropped += saved.length - valid.length;
+    State.sel[k] = new Set(valid);
     updatePillLabel(k);
   });
-  State.scope = v.scope || "";
+  if (dropped) toast(`Applied "${name}" — dropped ${dropped} filter value${dropped === 1 ? "" : "s"} no longer in the data`);
+  // Scope is single-select; keep it only if still a valid option.
+  State.scope = (State.scopeOptions || []).includes(v.scope) ? v.scope : "";
   updatePillLabel("scope");
   renderScopeMenu();
   $("#fSearch").value = v.search || "";
@@ -560,6 +615,7 @@ function renderAll(recs) {
   renderGrid(recs);
   if (State.planView === "gantt") renderGantt(recs);
   renderCapacity(recs);
+  renderSpecDeadlines(recs);
   renderRisk(recs);
   renderOwnerFocus(recs);
   renderMatrix(recs);
@@ -1077,6 +1133,82 @@ function riskItems(list, kind) {
         <span>${esc(r.functional_owner || r.technical_owner || "—")}</span>
       </div></div>`;
   }).join("");
+}
+
+/* ============================================================
+   SPEC DEADLINES — Functional Spec Status ≠ Complete, split into
+   already-delayed (spec date in the past) and due this calendar week.
+   Spec date = Revised if present, else Planned.
+   ============================================================ */
+const specDueDate = (r) => r.spec_revised || r.spec_planned;
+const specIncomplete = (r) => !/complete/i.test(r.fspec_status || "");
+
+// Stable initials + palette color for an owner avatar.
+const AVATAR_COLORS = ["#046A38", "#0097A9", "#00A3E0", "#ED8B00", "#6E2585", "#DA291C", "#2C5234", "#009999", "#75787B"];
+function avatarFor(name) {
+  const n = (name || "").trim();
+  if (!n) return null;
+  const parts = n.split(/\s+/);
+  const initials = ((parts[0][0] || "") + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+  let h = 0;
+  for (let i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) >>> 0;
+  return { initials: initials || n[0].toUpperCase(), color: AVATAR_COLORS[h % AVATAR_COLORS.length] };
+}
+
+function renderSpecDeadlines(recs) {
+  const t = today();
+  const wkEnd = parseISO(weekKey(t)); wkEnd.setDate(wkEnd.getDate() + 6); // Sunday of current week
+  const delayed = [], due = [];
+  recs.forEach(r => {
+    if (!specIncomplete(r)) return;
+    const d = parseISO(specDueDate(r));
+    if (!d) return;
+    if (d < t) delayed.push(r);
+    else if (d <= wkEnd) due.push(r);
+  });
+  $("#specDelayed").innerHTML = specTable(delayed, t, "delayed");
+  $("#specDueWeek").innerHTML = specTable(due, t, "due");
+  $("#specDelayedCount").textContent = delayed.length;
+  $("#specDueCount").textContent = due.length;
+  $$("#specDelayed .sd-row, #specDueWeek .sd-row").forEach(el =>
+    el.addEventListener("click", () => {
+      const r = recs.find(x => x.rice_id === el.dataset.id);
+      if (r) openModal(r.rice_id + " — " + r.object_name, [r], true);
+    }));
+}
+
+function specTable(list, t, kind) {
+  if (!list.length) {
+    return `<div class="risk-empty">${kind === "delayed"
+      ? "No delayed specs in the current filter. ✓"
+      : "No specs due this week in the current filter. ✓"}</div>`;
+  }
+  const rows = list.sort((a, b) =>
+    (parseISO(specDueDate(a)) || new Date(8640e12)) - (parseISO(specDueDate(b)) || new Date(8640e12))
+  ).map(r => {
+    const dateISO = specDueDate(r);
+    const days = Math.round((parseISO(dateISO) - t) / 86400000);
+    const src = r.spec_revised ? "Revised" : "Planned";
+    const age = kind === "delayed"
+      ? `${Math.abs(days)}d overdue`
+      : (days === 0 ? "due today" : `in ${days}d`);
+    const av = avatarFor(r.functional_owner);
+    const owner = av
+      ? `<span class="sd-av" style="background:${av.color}">${esc(av.initials)}</span><span class="sd-oname" title="${esc(r.functional_owner)}">${esc(r.functional_owner)}</span>`
+      : `<span class="sd-oname muted">—</span>`;
+    const dateTip = `Spec ${src}${r.spec_pct != null ? " · " + Math.round(r.spec_pct) + "%" : ""} · ${esc(r.fspec_status || "")}`;
+    return `<tr class="sd-row ${kind === "delayed" ? "blocked" : ""}" data-id="${esc(r.rice_id)}">
+      <td class="sd-name" title="${esc(r.object_name)}">${esc(r.object_name)}</td>
+      <td class="sd-idmod">
+        <span class="sd-id">${esc(r.rice_id)}</span>
+        <span class="sd-mod" title="${esc(r.module || "")}">${esc(r.module || "—")}</span>
+      </td>
+      <td class="sd-date" title="${dateTip}">${fmtDate(dateISO)}</td>
+      <td class="sd-owner">${owner}</td>
+      <td class="sd-age ${kind === "delayed" ? "delayed" : "due"}">${age}</td>
+    </tr>`;
+  }).join("");
+  return `<table class="sd-table"><tbody>${rows}</tbody></table>`;
 }
 
 /* ============================================================

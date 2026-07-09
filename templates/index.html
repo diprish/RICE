@@ -35,6 +35,7 @@
     <a href="#sec-plan">Delivery Plan</a>
     <a href="#sec-capacity">Capacity</a>
     <a href="#sec-resplan">Resource Plan</a>
+    <a href="#sec-specdue">Spec Deadlines</a>
     <a href="#sec-risk">Risk</a>
     <a href="#sec-owner">Owner Focus</a>
     <a href="#sec-matrix">Matrix</a>
@@ -73,7 +74,10 @@
   <section class="filterbar" id="filterbar">
     <div class="fb-head">
       <div class="fb-title">Filters</div>
-      <div class="fb-count" id="resultCount"></div>
+      <div class="fb-head-right">
+        <button type="button" class="fb-clear" id="clearAllBtn" hidden>Clear all</button>
+        <div class="fb-count" id="resultCount"></div>
+      </div>
     </div>
     <div class="fb-pills" id="fbPills"></div>
     <div class="fb-quick" id="quickPills"></div>
@@ -174,6 +178,23 @@
   </section>
 
   <!-- RISK -->
+  <!-- SPEC DEADLINES -->
+  <section id="sec-specdue" class="block">
+    <h2 class="block-title">Spec Deadlines
+      <span class="muted">— Functional Spec Status ≠ Complete · date = Revised → else Planned</span>
+    </h2>
+    <div class="sd-cols">
+      <div class="sd-card">
+        <div class="sd-head"><span class="sd-title">Delayed</span><span class="count-chip red" id="specDelayedCount">0</span></div>
+        <div id="specDelayed" class="sd-scroll"></div>
+      </div>
+      <div class="sd-card">
+        <div class="sd-head"><span class="sd-title">Due This Week</span><span class="count-chip amber" id="specDueCount">0</span></div>
+        <div id="specDueWeek" class="sd-scroll"></div>
+      </div>
+    </div>
+  </section>
+
   <section id="sec-risk" class="block">
     <div class="risk-cols">
       <div>

@@ -114,8 +114,12 @@ COLUMN_MAP = {
     "Technical Owner": "technical_owner",
     "Dev Start Date - Planned": "dev_start_planned",
     "Dev Start Date - Actual": "dev_start_actual",
-    "Build + UT Completion Date - P": "build_planned",
-    "Build + UT Completion Date - A": "build_actual",
+    # Source sheet labels the build/dev-complete milestone "Dev + UT Completion
+    # Date" (note the inconsistent spacing between the two columns). These feed
+    # the delivery date and sprint assignment; a mismatch here dumps every row
+    # into "Unscheduled". Matched exactly (not by prefix) to avoid ambiguity.
+    "Dev+ UT Completion Date - Planned": "build_planned",
+    "Dev + UT Completion Date - Actual": "build_actual",
     "Dev %": "dev_pct_raw",
     "Dev Status": "dev_status",
     "FUT Start Date - Actual": "fut_start_actual",
@@ -969,5 +973,6 @@ def health():
 
 
 if __name__ == "__main__":
-    print(" * RICE Tracker dashboard starting on http://127.0.0.1:5000")
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    print(f" * RICE Tracker dashboard starting on http://127.0.0.1:{port}")
+    app.run(host="127.0.0.1", port=port, debug=True)
