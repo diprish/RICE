@@ -632,3 +632,10 @@ table.matrix tr.total-row td, table.matrix td.total-col { background: var(--surf
   .rp-tl { --rp-lbl-w: 120px; }
   .rp-controls { gap: 8px 12px; }
 }
+
+/* Shared Object-Status color key for the Sprint & Phase Summary bars */
+.status-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+  margin: 0 0 14px; font-size: 12px; color: var(--text-2); }
+.status-legend span { display: inline-flex; align-items: center; white-space: nowrap; }
+.status-legend i { width: 12px; height: 12px; border-radius: 3px; margin-right: 6px;
+  border: 1px solid rgba(0,0,0,.08); }

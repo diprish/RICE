@@ -114,10 +114,13 @@ COLUMN_MAP = {
     "Technical Owner": "technical_owner",
     "Dev Start Date - Planned": "dev_start_planned",
     "Dev Start Date - Actual": "dev_start_actual",
-    # Source sheet labels the build/dev-complete milestone "Dev + UT Completion
-    # Date" (note the inconsistent spacing between the two columns). These feed
-    # the delivery date and sprint assignment; a mismatch here dumps every row
-    # into "Unscheduled". Matched exactly (not by prefix) to avoid ambiguity.
+    # Build/dev-complete milestone. Older workbooks label it "Build + UT
+    # Completion Date"; newer ones renamed it to "Dev + UT Completion Date"
+    # (with inconsistent spacing between the two columns). These drive the
+    # delivery date and sprint assignment — a mismatch dumps every object into
+    # "Unscheduled" — so we map both spellings.
+    "Build + UT Completion Date - P": "build_planned",
+    "Build + UT Completion Date - A": "build_actual",
     "Dev+ UT Completion Date - Planned": "build_planned",
     "Dev + UT Completion Date - Actual": "build_actual",
     "Dev %": "dev_pct_raw",
