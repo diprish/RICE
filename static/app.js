@@ -1450,9 +1450,14 @@ function renderResourcePlan() {
     (k.feasible ? "" : ` — <b>${k.misses}</b> objects (${fmtNum(k.late_hours)} hrs) cannot meet their deadline at this onboarding cadence; see the misses list below.`);
 
   const buf = k.buffer_bdays;
+  const byType = k.peak_by_type || {};
+  const typeMix = Object.keys(byType).length
+    ? Object.keys(byType).sort().map(ty =>
+        `<span class="rp-typechip"><i style="background:${TYPE_COLOR[ty] || "#75787B"}"></i>${esc(ty)} ${byType[ty]}</span>`).join(" ")
+    : `${k.existing_team} current + ${k.onboarded} onboarded`;
   const cards = [
-    ["Peak team", k.peak_team, `${k.existing_team} current + ${k.onboarded} onboarded`, ""],
-    ["Onboards", k.onboarded, `max ${sc.max_onboards_per_week}/week, earliest-needed first`, ""],
+    ["Peak team", k.peak_team, typeMix, ""],
+    ["Onboards", k.onboarded, `max ${sc.max_onboards_per_week}/week per type, earliest-needed first`, ""],
     ["Finish", fmtDate(k.finish), buf == null ? "" : (buf >= 0 ? `${buf} working days before SIT 1` : `${-buf} working days past SIT 1`), buf != null && buf < 0 ? "bad" : "ok"],
     ["Planned hours", fmtNum(k.hours), `${k.objects} objects${sc.contingency_pct ? ` · incl. +${sc.contingency_pct}% contingency` : ""}`, ""],
     ["Deadline misses", k.misses, k.misses ? `${fmtNum(k.late_hours)} hrs land late` : "everything on time", k.misses ? "bad" : "ok"],
@@ -1474,30 +1479,43 @@ function renderRpChart(plan, sc) {
   const text2 = css.getPropertyValue("--text-2").trim();
   const grid = css.getPropertyValue("--border").trim();
   const labels = sc.weekly.map(w => fmtDate(w.week));
-  const colors = sc.weekly.map(w =>
-    w.week < plan.sit1_start ? "#5b52e0" : (w.week < plan.sit2_start ? "#ED8B00" : "#DA291C"));
+  // Resources are siloed by RICE type — stack one dataset per type so the ramp
+  // shows how many developers of each type are active each week.
+  const types = sc.types && sc.types.length ? sc.types : ["Unspecified"];
+  const datasets = types.map(ty => ({
+    label: ty,
+    data: sc.weekly.map(w => (w.by_type && w.by_type[ty]) || 0),
+    backgroundColor: TYPE_COLOR[ty] || "#75787B",
+    stack: "team", borderRadius: 3, borderWidth: 0,
+  }));
+
+  const legend = $("#rpRampLegend");
+  if (legend) legend.innerHTML = types
+    .map(ty => `<span><i style="background:${TYPE_COLOR[ty] || "#75787B"}"></i> ${esc(ty)}</span>`).join("");
+
   if (State.charts.rpRamp) State.charts.rpRamp.destroy();
   State.charts.rpRamp = new Chart($("#rpRamp"), {
     type: "bar",
-    data: { labels, datasets: [{ data: sc.weekly.map(w => w.active), backgroundColor: colors, borderRadius: 3 }] },
+    data: { labels, datasets },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
       plugins: {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: c => `${c.parsed.y} active developer${c.parsed.y === 1 ? "" : "s"}`,
-            afterLabel: c => {
-              const w = sc.weekly[c.dataIndex];
-              return (w.onboards ? `+${w.onboards} onboarding this week\n` : "") +
-                `capacity ${Math.round(w.capacity)} h · scheduled ${Math.round(w.scheduled)} h`;
+            label: c => `${c.dataset.label}: ${c.parsed.y} dev${c.parsed.y === 1 ? "" : "s"}`,
+            footer: items => {
+              const w = sc.weekly[items[0].dataIndex];
+              return `${w.active} active total` +
+                (w.onboards ? ` · +${w.onboards} onboarding` : "") +
+                `\ncapacity ${Math.round(w.capacity)} h · scheduled ${Math.round(w.scheduled)} h`;
             },
           },
         },
       },
       scales: {
-        x: { ticks: { color: text2, maxRotation: 60, autoSkip: true }, grid: { display: false } },
-        y: { beginAtZero: true, ticks: { color: text2, precision: 0 }, grid: { color: grid } },
+        x: { stacked: true, ticks: { color: text2, maxRotation: 60, autoSkip: true }, grid: { display: false } },
+        y: { stacked: true, beginAtZero: true, ticks: { color: text2, precision: 0 }, grid: { color: grid } },
       },
     },
   });
@@ -1550,7 +1568,7 @@ function renderRpTimeline(plan, sc) {
         title="${esc(a.rice_id)} · ${esc(a.object_name)} · ${esc(a.complexity)} · ${a.hours}h${a.estimated ? " (estimated)" : ""} · ${fmtDate(a.start)} → ${fmtDate(a.end)}${a.late ? " · misses " + fmtDate(a.deadline) + " deadline" : ""}">${esc(a.rice_id)}</div>`;
     }).join("");
     return `<div class="rp-row">
-      <div class="rp-lbl"><b>${esc(r.name)}</b><span>${fmtDate(r.onboard)} → ${fmtDate(r.rolloff)} · ${r.utilization}%</span></div>
+      <div class="rp-lbl"><b><i class="rp-lbl-dot" style="background:${TYPE_COLOR[r.rice_type] || "#75787B"}"></i>${esc(r.name)}</b><span>${fmtDate(r.onboard)} → ${fmtDate(r.rolloff)} · ${r.utilization}%</span></div>
       <div class="rp-track">${bars}</div>
     </div>`;
   }).join("");
