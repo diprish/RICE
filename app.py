@@ -662,44 +662,102 @@ def _iso(cal, d):
     return cal[d].strftime("%Y-%m-%d")
 
 
-def _scenario_payload(label, description, items, deadlines, cal, cfg, hpw, ramp_days, ramp_pct, current_team):
-    hires, sim = _run_scenario(items, deadlines, cal, cfg, hpw, ramp_days, ramp_pct, current_team)
+def _type_key(t):
+    """Canonical RICE-type label used to silo resource pools."""
+    return (t or "").strip() or "Unspecified"
+
+
+def _split_team(total, weights, types):
+    """Apportion `total` existing devs across `types` by `weights` (largest
+    remainder). Falls back to an equal split when no weight is available."""
+    types = list(types)
+    if total <= 0 or not types:
+        return {t: 0 for t in types}
+    wsum = sum(max(weights.get(t, 0), 0) for t in types)
+    if wsum <= 0:
+        base, extra = divmod(total, len(types))
+        return {t: base + (1 if i < extra else 0) for i, t in enumerate(types)}
+    quota = {t: total * max(weights.get(t, 0), 0) / wsum for t in types}
+    out = {t: int(quota[t]) for t in types}
+    rem = total - sum(out.values())
+    for t in sorted(types, key=lambda t: quota[t] - int(quota[t]), reverse=True)[:rem]:
+        out[t] += 1
+    return out
+
+
+def _scenario_payload(label, description, items, deadlines, cal, cfg, hpw, ramp_days, ramp_pct, team_by_type):
+    """Resources are siloed by RICE type: each type is scheduled against its
+    own dev pool (existing team of that type + its own hire track) and never
+    shares developers across types. Results are merged for reporting."""
     daily = hpw / 5.0
 
+    groups = {}
+    for it in items:
+        groups.setdefault(_type_key(it["rice_type"]), []).append(it)
+
     resources = []
-    for i, rs in enumerate(sim["resources"]):
-        if not rs["assignments"] and rs["cur"] is None:
-            continue
-        existing = i < current_team
-        ends = [a["end"] for a in rs["assignments"]]
-        rolloff = max(ends) if ends else rs["onboard"]
-        cap_hours = sum(daily * (ramp_pct if d - rs["onboard"] < rs["ramp"] else 1.0)
-                        for d in range(rs["onboard"], rolloff + 1))
-        done_hours = sum(a["item"]["hours"] for a in rs["assignments"])
-        resources.append({
-            "name": f"Dev {i + 1}" + (" (current)" if existing else ""),
-            "existing": existing,
-            "onboard": _iso(cal, rs["onboard"]),
-            "rolloff": _iso(cal, rolloff),
-            "hours": round(done_hours, 1),
-            "utilization": round(100.0 * done_hours / cap_hours, 1) if cap_hours else 0.0,
-            "assignments": [{
-                "rice_id": a["item"]["rice_id"],
-                "object_name": a["item"]["object_name"],
-                "rice_type": a["item"]["rice_type"],
-                "complexity": a["item"]["complexity"],
-                "hours": round(a["item"]["hours"], 1),
-                "estimated": a["item"]["estimated"],
-                "start": _iso(cal, a["start"]),
-                "end": _iso(cal, a["end"]),
-                "deadline": _iso(cal, deadlines[a["item"]["rice_id"]]),
-                "late": a["end"] > deadlines[a["item"]["rice_id"]],
-            } for a in rs["assignments"]],
-        })
+    finish = {}
+    unfinished = []
+    hires_total = 0
+    current_team_total = 0
+    onboards_by_week = {}
+    spans_by_type = {}                       # type -> [(onboard_day, last_end_day)]
+    wk_capacity, wk_scheduled = {}, {}       # week index -> hours
+    dev_seq = 0
+
+    for ty in sorted(groups):
+        its = groups[ty]
+        ct = int(team_by_type.get(ty, 0))
+        current_team_total += ct
+        hires, sim = _run_scenario(its, deadlines, cal, cfg, hpw, ramp_days, ramp_pct, ct)
+        hires_total += len(hires)
+        finish.update(sim["finish"])
+        unfinished += sim["unfinished"]
+        for h in hires:
+            w = h[0] // 5
+            onboards_by_week[w] = onboards_by_week.get(w, 0) + 1
+        for w in range(len(sim["wk_capacity"])):
+            wk_capacity[w] = wk_capacity.get(w, 0.0) + sim["wk_capacity"][w]
+            wk_scheduled[w] = wk_scheduled.get(w, 0.0) + sim["wk_scheduled"][w]
+
+        spans = spans_by_type.setdefault(ty, [])
+        for idx, rs in enumerate(sim["resources"]):
+            if not rs["assignments"] and rs["cur"] is None:
+                continue
+            existing = idx < ct               # base team is appended first in _run_scenario
+            dev_seq += 1
+            ends = [a["end"] for a in rs["assignments"]]
+            rolloff = max(ends) if ends else rs["onboard"]
+            cap_hours = sum(daily * (ramp_pct if d - rs["onboard"] < rs["ramp"] else 1.0)
+                            for d in range(rs["onboard"], rolloff + 1))
+            done_hours = sum(a["item"]["hours"] for a in rs["assignments"])
+            resources.append({
+                "name": f"{ty[:3].upper()} Dev {dev_seq}" + (" (current)" if existing else ""),
+                "rice_type": ty,
+                "existing": existing,
+                "onboard": _iso(cal, rs["onboard"]),
+                "rolloff": _iso(cal, rolloff),
+                "hours": round(done_hours, 1),
+                "utilization": round(100.0 * done_hours / cap_hours, 1) if cap_hours else 0.0,
+                "assignments": [{
+                    "rice_id": a["item"]["rice_id"],
+                    "object_name": a["item"]["object_name"],
+                    "rice_type": a["item"]["rice_type"],
+                    "complexity": a["item"]["complexity"],
+                    "hours": round(a["item"]["hours"], 1),
+                    "estimated": a["item"]["estimated"],
+                    "start": _iso(cal, a["start"]),
+                    "end": _iso(cal, a["end"]),
+                    "deadline": _iso(cal, deadlines[a["item"]["rice_id"]]),
+                    "late": a["end"] > deadlines[a["item"]["rice_id"]],
+                } for a in rs["assignments"]],
+            })
+            if ends:
+                spans.append((rs["onboard"], max(ends)))
 
     misses = []
     for it in items:
-        fin = sim["finish"].get(it["rice_id"])
+        fin = finish.get(it["rice_id"])
         dl = deadlines[it["rice_id"]]
         if fin is None or fin > dl:
             misses.append({
@@ -709,37 +767,50 @@ def _scenario_payload(label, description, items, deadlines, cal, cfg, hpw, ramp_
                 "deadline": _iso(cal, dl),
             })
 
-    # weekly ramp series (resource active from onboard to rolloff)
-    spans = []
-    for i, rs in enumerate(sim["resources"]):
-        ends = [a["end"] for a in rs["assignments"]]
-        if ends:
-            spans.append((rs["onboard"], max(ends)))
-    n_weeks = (max((e for _, e in spans), default=0) // 5) + 1
+    # weekly ramp series with per-type active-developer breakdown (for the
+    # stacked chart). A resource is active from its onboard week to roll-off.
+    all_ends = [e for spans in spans_by_type.values() for _, e in spans]
+    n_weeks = (max(all_ends, default=0) // 5) + 1
+    types_present = sorted(spans_by_type)
     weekly = []
+    peak_week = None
     for w in range(n_weeks):
-        weekly.append({
+        d0, d4 = w * 5, w * 5 + 4
+        by_type = {}
+        for ty in types_present:
+            c = sum(1 for s, e in spans_by_type[ty] if s <= d4 and e >= d0)
+            if c:
+                by_type[ty] = c
+        active = sum(by_type.values())
+        row = {
             "week": _iso(cal, w * 5),
-            "active": sum(1 for s, e in spans if s <= w * 5 + 4 and e >= w * 5),
-            "onboards": sum(1 for h in hires if h[0] // 5 == w),
-            "capacity": round(sim["wk_capacity"][w], 1),
-            "scheduled": round(sim["wk_scheduled"][w], 1),
-        })
+            "active": active,
+            "by_type": by_type,
+            "onboards": onboards_by_week.get(w, 0),
+            "capacity": round(wk_capacity.get(w, 0.0), 1),
+            "scheduled": round(wk_scheduled.get(w, 0.0), 1),
+        }
+        weekly.append(row)
+        if peak_week is None or active > peak_week["active"]:
+            peak_week = row
 
-    finish_day = sim["last_day"]
+    finish_day = max(finish.values()) if finish else 0
     utils = [r["utilization"] for r in resources]
     return {
         "label": label,
         "description": description,
         "max_onboards_per_week": cfg["max_onboards_per_week"],
         "contingency_pct": cfg.get("contingency_pct", 0),
+        "types": types_present,
         "kpis": {
-            "peak_team": max((wk["active"] for wk in weekly), default=0),
-            "onboarded": len(hires),
-            "existing_team": current_team,
-            "finish": _iso(cal, finish_day) if not sim["unfinished"] else None,
+            "peak_team": peak_week["active"] if peak_week else 0,
+            "peak_by_type": peak_week["by_type"] if peak_week else {},
+            "onboarded": hires_total,
+            "existing_team": current_team_total,
+            "existing_by_type": {ty: int(team_by_type.get(ty, 0)) for ty in sorted(groups)},
+            "finish": _iso(cal, finish_day) if not unfinished else None,
             "buffer_bdays": int(np.busday_count(cal[min(finish_day, len(cal) - 1)].date(),
-                                                SIT1_START.date())) if not sim["unfinished"] else None,
+                                                SIT1_START.date())) if not unfinished else None,
             "hours": round(sum(it["hours"] for it in items), 1),
             "objects": len(items),
             "feasible": len(misses) == 0,
@@ -788,32 +859,46 @@ def build_resource_plan(records, params):
     wave_items = sorted(items, key=lambda it: (wave_of(it), -it["priority"], -it["hours"]))
     wave_deadlines = {it["rice_id"]: (sit1_dl if wave_of(it) == 1 else sit2_dl) for it in items}
 
-    # Existing team default: one dev per open object with active dev work.
-    active_wip = sum(
-        1 for r in scope
-        if (r["build_status"] or "").strip().lower() != "completed"
-        and (r["dev_status"] or "").strip().lower() in ("in progress", "delayed")
-    )
-    current_team = int(params["current_team"]) if params["current_team"] >= 0 else max(active_wip, 1)
+    # Existing team, siloed by RICE type. Default (auto): one dev per open
+    # object with active dev work, split across types by the in-flight work mix
+    # (objects currently In Progress / Delayed). An explicit team size is
+    # apportioned across the types that still have open work by the same mix.
+    wip_by_type = {}
+    for r in scope:
+        if (r["build_status"] or "").strip().lower() == "completed":
+            continue
+        if (r["dev_status"] or "").strip().lower() in ("in progress", "delayed"):
+            k = _type_key(r["rice_type"])
+            wip_by_type[k] = wip_by_type.get(k, 0) + 1
+    item_types = sorted({_type_key(it["rice_type"]) for it in items})
+    if params["current_team"] >= 0:
+        team_by_type = _split_team(int(params["current_team"]), wip_by_type, item_types)
+    else:
+        # auto: staff each type to its in-flight count; guarantee at least one
+        # dev overall so a fresh plan still has a starting pool.
+        team_by_type = {t: wip_by_type.get(t, 0) for t in item_types}
+        if item_types and sum(team_by_type.values()) == 0:
+            team_by_type[item_types[0]] = 1
+    current_team = sum(team_by_type.values())
     params = {**params, "current_team": current_team}
 
     scenarios = {
         "aggressive": _scenario_payload(
-            "Aggressive", f"Everything done {buffer_days} working days before SIT 1 · up to 2 onboards/week",
+            "Aggressive", f"Everything done {buffer_days} working days before SIT 1 · up to 2 onboards/week per type",
             items, all_by(max(sit1_dl - buffer_days, 0)), cal,
-            {"max_onboards_per_week": 2}, hpw, ramp_days, ramp_pct, current_team),
+            {"max_onboards_per_week": 2}, hpw, ramp_days, ramp_pct, team_by_type),
         "optimized": _scenario_payload(
-            "Optimized", "Everything done just-in-time for SIT 1 · max 1 onboard/week · smallest team",
+            "Optimized", "Everything done just-in-time for SIT 1 · max 1 onboard/week per type · smallest team",
             items, all_by(sit1_dl), cal,
-            {"max_onboards_per_week": 1}, hpw, ramp_days, ramp_pct, current_team),
+            {"max_onboards_per_week": 1}, hpw, ramp_days, ramp_pct, team_by_type),
         "conservative": _scenario_payload(
             "Conservative", f"SIT 1 deadline with +{params['contingency_pct']:.0f}% effort contingency baked into every estimate",
             inflated(contingency), all_by(sit1_dl), cal,
-            {"max_onboards_per_week": 1, "contingency_pct": params["contingency_pct"]}, hpw, ramp_days, ramp_pct, current_team),
+            {"max_onboards_per_week": 1, "contingency_pct": params["contingency_pct"]}, hpw, ramp_days, ramp_pct, team_by_type),
         "two_wave": _scenario_payload(
             "Two-Wave", "Integrations, extensions & complex work before SIT 1 · simple/medium reports may land before SIT 2",
             wave_items, wave_deadlines, cal,
-            {"max_onboards_per_week": 1}, hpw, ramp_days, ramp_pct, current_team),
+            {"max_onboards_per_week": 1}, hpw, ramp_days, ramp_pct, team_by_type),
     }
 
     est_count = sum(1 for it in items if it["estimated"])

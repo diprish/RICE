@@ -601,6 +601,12 @@ table.matrix tr.total-row td, table.matrix td.total-col { background: var(--surf
 .rp-tl-legend i { display: inline-block; width: 14px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 .rp-tl-legend i.late-demo { background: repeating-linear-gradient(45deg, #DA291C, #DA291C 3px, transparent 3px, transparent 6px);
   border: 1px solid #DA291C; }
+/* per-type composition chips in the Peak team KPI card */
+.card-break span:has(.rp-typechip) { display: flex; flex-wrap: wrap; gap: 3px 8px; justify-content: flex-start; }
+.rp-typechip { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; justify-content: flex-start; }
+.rp-typechip i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+/* type swatch on each resource row label */
+.rp-lbl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 1px; }
 .rp-tl { --rp-lbl-w: 190px; position: relative; background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-sm); box-shadow: var(--shadow); padding: 26px 10px 10px calc(0px); overflow: hidden; }
 .rp-overlay { position: absolute; left: var(--rp-lbl-w); right: 10px; top: 0; bottom: 0; pointer-events: none; }
