@@ -334,14 +334,20 @@ def process(path):
         # diamond: spec complete marker (actual if available else effective)
         rec["gantt_spec"] = rec["spec_actual"] or spec_eff
 
-        start_candidates = [rec["spec_effective"], rec["dev_start_actual"], rec["dev_start_planned"]]
-        start_ts = [pd.Timestamp(d) for d in start_candidates if d]
-        gantt_start = max(start_ts) if start_ts else None
+        # objects with no dev work ("Not Applicable") get no build bar; the
+        # spec diamond above still renders.
+        dev_not_applicable = (rec["dev_status"] or "").strip().lower() == "not applicable"
 
-        # delivery: actual else planned
+        # build bar spans Dev Start Date -> Dev + UT Completion Date.
+        # start: actual dev-start else planned dev-start (spec dates are shown
+        # separately as the diamond marker and must not drive the bar start).
+        build_start = rec["dev_start_actual"] or rec["dev_start_planned"]
+        gantt_start = pd.Timestamp(build_start) if build_start and not dev_not_applicable else None
+
+        # delivery (Dev + UT Completion): actual else planned
         delivery = rec["build_actual"] or rec["build_planned"]
         rec["delivery_date"] = delivery
-        gantt_delivery = pd.Timestamp(delivery) if delivery else None
+        gantt_delivery = pd.Timestamp(delivery) if delivery and not dev_not_applicable else None
 
         # fallback duration from build hours when delivery missing
         if gantt_start is not None and gantt_delivery is None and bh:
@@ -370,7 +376,6 @@ def process(path):
         elif rec["build_planned"]:
             deliver_ts = pd.Timestamp(rec["build_planned"])
         phase = find_phase(deliver_ts)
-        dev_not_applicable = (rec["dev_status"] or "").strip().lower() == "not applicable"
         if phase:
             rec["assigned_sprint"] = phase
         elif dev_not_applicable:
