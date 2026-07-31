@@ -653,7 +653,11 @@ function renderTypeCards(recs) {
     const sc = countByStatus(subset);
     const order = statusOrder(subset).filter(s => sc[s]);
     const total = subset.length;
-    const completed = sc["Completed"] || 0;
+    // % Complete accounts for finished work plus anything in FUT.
+    const completed = Object.entries(sc).reduce((n, [s, c]) => {
+      const k = String(s).toLowerCase();
+      return (k.includes("complete") || k.includes("done") || k.includes("fut")) ? n + c : n;
+    }, 0);
     const pct = total ? Math.round(100 * completed / total) : 0;
     const arc = C * pct / 100;
 
