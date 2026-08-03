@@ -124,7 +124,17 @@ code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px;
   padding: 6px 9px; border-radius: 6px; }
 .navlinks a:hover, .navlinks a.active { background: var(--surface-2); color: var(--dl-green-dark); }
 [data-theme="dark"] .navlinks a:hover, [data-theme="dark"] .navlinks a.active { color: var(--dl-green); }
-.topactions { margin-left: auto; display: flex; gap: 8px; }
+.topactions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.baseline-tag {
+  display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600;
+  color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm); padding: 5px 6px 5px 10px; white-space: nowrap;
+}
+.baseline-clear {
+  font: inherit; border: none; background: transparent; color: var(--muted); cursor: pointer;
+  padding: 2px 4px; line-height: 1; border-radius: 4px;
+}
+.baseline-clear:hover { color: var(--dl-red); background: var(--surface); }
 
 /* ---------- upload screen ---------- */
 .upload-screen { display: none; min-height: 100vh; place-items: center; padding: 40px 20px;
@@ -386,6 +396,7 @@ code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px;
 .g-bar { width: 26px; height: 9px; background: var(--dl-blue); border-radius: 3px; }
 .g-est { background: var(--dl-cool-gray); opacity: .5; }
 .g-dot { width: 11px; height: 11px; background: var(--dl-orange); border-radius: 50%; }
+.g-baseline { background: none; border: 1.5px dashed var(--muted); border-radius: 2px; height: 4px; }
 .gantt-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 
 /* ---------- capacity heatmap ---------- */
@@ -546,6 +557,11 @@ table.matrix tr.total-row td, table.matrix td.total-col { background: var(--surf
 
 /* Selected rows keep AG Grid's own highlight on top */
 .ag-theme-quartz .ag-row.ag-row-selected { box-shadow: none; }
+
+/* Slip vs baseline: later than baseline = red, earlier = green */
+.ag-theme-quartz .cell-slip-late  { color: var(--dl-red); font-weight: 700; }
+.ag-theme-quartz .cell-slip-early { color: var(--dl-green-dark); font-weight: 700; }
+.ag-theme-quartz .cell-slip-flat  { color: var(--muted); }
 
 /* ============================================================
    RESOURCE PLAN

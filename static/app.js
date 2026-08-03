@@ -17,18 +17,21 @@ function statusColor(s) {
   if (k.includes("not started") || k.includes("not-started")) return "#dfe3e9"; // light grey
   return "#c3c9d4";                                                 // fallback grey
 }
-// Canonical display rank for statuses (lower = earlier): green, blues, amber, red, greys.
+// Canonical display rank for statuses (lower = earlier). Fixed program sequence:
+// Not Started, Delayed, F-Spec In Progress, Dev Not Started, Dev In Progress,
+// Blocked, FUT, Completed. Every legend/breakdown/matrix in the app sorts by
+// this so the order is identical everywhere a status shows up.
 function statusRank(s) {
   const k = (s || "").toLowerCase();
-  if (k.includes("complete") || k.includes("done")) return 1;
-  if (k.includes("dev-in") || k.includes("dev in") || (k.includes("in progress") && !k.includes("f-spec") && !k.includes("fspec"))) return 2;
+  if (k.includes("complete") || k.includes("done")) return 8;
+  if (k.includes("dev-in") || k.includes("dev in") || (k.includes("in progress") && !k.includes("f-spec") && !k.includes("fspec"))) return 5;
   if (k.includes("f-spec") || k.includes("fspec") || k.includes("f spec")) return 3;
-  if (k.includes("fut")) return 4;
-  if (/(progress|draft|review|wip)/.test(k)) return 4.5;
-  if (k.includes("delay")) return 5;
+  if (k.includes("fut")) return 7;
+  if (/(progress|draft|review|wip)/.test(k)) return 5.5;
+  if (k.includes("delay")) return 2;
   if (k.includes("block")) return 6;
-  if (k.includes("dev-not") || k.includes("dev not")) return 7;
-  if (k.includes("not started") || k.includes("not-started")) return 8;
+  if (k.includes("dev-not") || k.includes("dev not")) return 4;
+  if (k.includes("not started") || k.includes("not-started")) return 1;
   return 9;
 }
 // Distinct raw Object Status values present, ordered by canonical rank.
@@ -94,6 +97,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initTheme();
   initUpload();
   initTopbar();
+  initBaseline();
   initFilters();
   initPlanToggle();
   initResourcePlan();
@@ -133,6 +137,50 @@ function initTopbar() {
     links.forEach(a => a.classList.remove("active"));
     if (cur) cur.a.classList.add("active");
   }, { passive: true });
+}
+
+/* ============================================================
+   BASELINING — snapshot current planned/delivery dates so later
+   loads can show delay/slip against that fixed point in time.
+   ============================================================ */
+function renderBaselineStatus() {
+  const tag = $("#baselineTag"), btn = $("#baselineBtn");
+  const capturedAt = State.data && State.data.baseline_captured_at;
+  if (capturedAt) {
+    const d = new Date(capturedAt);
+    tag.innerHTML = `Baseline: ${d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })}` +
+      `<button id="baselineClearBtn" class="baseline-clear" title="Clear baseline">✕</button>`;
+    tag.classList.remove("hidden");
+    btn.textContent = "↻ Re-baseline";
+  } else {
+    tag.classList.add("hidden");
+    tag.innerHTML = "";
+    btn.textContent = "⚑ Set Baseline";
+  }
+}
+
+function initBaseline() {
+  $("#baselineBtn").addEventListener("click", async () => {
+    const has = State.data && State.data.baseline_captured_at;
+    if (has && !confirm("Re-capture the baseline from today's dates? This replaces the existing baseline.")) return;
+    try {
+      const r = await fetch("/api/baseline", { method: "POST" });
+      const j = await r.json();
+      if (!r.ok || !j.ok) { toast("Error: " + (j.message || "Could not set baseline.")); return; }
+      toast(`Baseline captured for ${j.count} objects.`);
+      await loadData();
+    } catch (e) { toast("Network error: " + e.message); }
+  });
+  document.addEventListener("click", async (e) => {
+    if (e.target.id !== "baselineClearBtn") return;
+    e.stopPropagation();
+    if (!confirm("Clear the current baseline? Slip/delay columns will disappear until a new baseline is set.")) return;
+    try {
+      await fetch("/api/baseline", { method: "DELETE" });
+      toast("Baseline cleared.");
+      await loadData();
+    } catch (e) { toast("Network error: " + e.message); }
+  });
 }
 
 /* ============================================================
@@ -186,6 +234,7 @@ async function loadData() {
     if (j.error) { toast("Error: " + j.message); return; }
     State.data = j;
     populateFilterOptions(j);
+    renderBaselineStatus();
     $("#footMeta").textContent =
       `Source sheet: ${j.source_sheet} · ${j.record_count} objects · generated ${j.generated_at.replace("T", " ")}`;
     $("#brandSub").textContent = `${j.summary.total_in_scope} in-scope of ${j.record_count} RICE objects`;
@@ -705,7 +754,8 @@ function countByStatus(recs) {
    RAW OBJECT STATUS
    ============================================================ */
 function renderRawStatus(recs) {
-  const statuses = [...new Set(recs.map(r => r.object_status || "—"))].sort();
+  const statuses = [...new Set(recs.map(r => r.object_status || "—"))]
+    .sort((a, b) => (statusRank(a) - statusRank(b)) || a.localeCompare(b));
   const el = $("#rawStatusCards");
   el.innerHTML = statuses.map(s => {
     const subset = recs.filter(r => (r.object_status || "—") === s);
@@ -801,6 +851,13 @@ function gridColumns() {
     { headerName: "Spec Plan", field: "spec_effective", width: 110, valueFormatter: p => fmtDate(p.value) },
     { headerName: "Spec Actual", field: "spec_actual", width: 110, valueFormatter: p => fmtDate(p.value) },
     { headerName: "Delivery", field: "delivery_date", width: 110, valueFormatter: p => fmtDate(p.value) },
+    { headerName: "Baseline Start", field: "baseline_gantt_start", width: 130, valueFormatter: p => fmtDate(p.value) },
+    { headerName: "Baseline Delivery", field: "baseline_gantt_delivery", width: 140, valueFormatter: p => fmtDate(p.value) },
+    {
+      headerName: "Slip (days)", field: "slip_days", width: 120, type: "numericColumn",
+      valueFormatter: p => p.value == null ? "—" : (p.value > 0 ? "+" : "") + p.value,
+      cellClass: p => p.value == null ? "" : p.value > 0 ? "cell-slip-late" : p.value < 0 ? "cell-slip-early" : "cell-slip-flat",
+    },
     { headerName: "Assigned Sprint", field: "assigned_sprint", width: 140 },
     { headerName: "Source", field: "source_system", width: 150 },
     { headerName: "Target", field: "target_system", width: 150 },
@@ -896,6 +953,7 @@ function renderGantt(recs) {
       `<span><i class="g-diamond"></i> Spec complete</span>` +
       `<span><i class="g-dot"></i> Delivery</span>` +
       `<span><i class="g-bar g-est"></i> Estimated (faded)</span>` +
+      (State.data.baseline_captured_at ? `<span><i class="g-bar g-baseline"></i> Baseline (as of ${fmtDate(State.data.baseline_captured_at.slice(0, 10))})</span>` : "") +
       `<span class="muted">| Phase shading behind timeline · current week highlighted</span>`;
   }
 
@@ -909,7 +967,8 @@ function renderGantt(recs) {
   let minD = parseISO(tl[0].start), maxD = parseISO((boundedTl[boundedTl.length - 1] || tl[tl.length - 1]).end);
   rows.forEach(r => {
     const s = parseISO(r.gantt_start), d = parseISO(r.gantt_delivery), sp = parseISO(r.gantt_spec);
-    [s, d, sp].forEach(x => { if (x && x < minD) minD = x; if (x && x > maxD) maxD = x; });
+    const bs = parseISO(r.baseline_gantt_start), bd = parseISO(r.baseline_gantt_delivery);
+    [s, d, sp, bs, bd].forEach(x => { if (x && x < minD) minD = x; if (x && x > maxD) maxD = x; });
   });
   // pad a week each side
   minD = new Date(minD.getTime() - 6 * 864e5); maxD = new Date(maxD.getTime() + 6 * 864e5);
@@ -973,6 +1032,12 @@ function renderGantt(recs) {
     const nm = (r.object_name || "").length > 30 ? r.object_name.slice(0, 29) + "…" : r.object_name;
     bars += `<text x="8" y="${cy - 3}" font-size="10.5" font-weight="700" fill="var(--text)">${esc(r.rice_id)}</text>`;
     bars += `<text x="8" y="${cy + 9}" font-size="9.5" fill="var(--text-2)">${esc(nm)}</text>`;
+    // baseline ghost bar — drawn above the current bar so both are visible at once
+    if (r.baseline_gantt_start && r.baseline_gantt_delivery) {
+      const bxs = x(parseISO(r.baseline_gantt_start)), bxd = x(parseISO(r.baseline_gantt_delivery));
+      bars += `<rect x="${bxs}" y="${cy - 9}" width="${Math.max(bxd - bxs, 2)}" height="4" rx="2" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="3 2" opacity=".85">
+        <title>${esc(r.rice_id)} — baseline ${fmtDate(r.baseline_gantt_start)} → ${fmtDate(r.baseline_gantt_delivery)}${r.slip_days != null ? ` (slip ${r.slip_days > 0 ? "+" : ""}${r.slip_days}d)` : ""}</title></rect>`;
+    }
     // build bar
     bars += `<rect x="${xs}" y="${cy - 4}" width="${Math.max(xd - xs, 2)}" height="8" rx="3" fill="${barColor}" opacity="${r.gantt_delivery_estimated ? .5 : .9}">
       <title>${esc(r.rice_id)} — build ${fmtDate(r.gantt_start)} → ${fmtDate(r.gantt_delivery)}${r.gantt_delivery_estimated ? " (est)" : ""}</title></rect>`;
@@ -1306,7 +1371,7 @@ function renderOwnerFocus(recs) {
 function renderMatrix(recs) {
   const types = TYPE_ORDER.filter(t => recs.some(r => r.rice_type === t))
     .concat([...new Set(recs.map(r => r.rice_type))].filter(t => !TYPE_ORDER.includes(t)));
-  const rawStatuses = [...new Set(recs.map(r => r.object_status).filter(Boolean))].sort();
+  const rawStatuses = statusOrder(recs);
   buildMatrix($("#matrixRaw"), recs, types, rawStatuses, "object_status");
 }
 function buildMatrix(container, recs, rows, cols, field) {

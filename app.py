@@ -26,6 +26,10 @@ BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 DATA_FILE = os.path.join(BASE_DIR, "rice_tracker_data.xlsx")
 SAVED_FILTERS_FILE = os.path.join(BASE_DIR, "saved_filters.json")
+BASELINE_FILE = os.path.join(BASE_DIR, "baseline.json")
+# Per-item fields snapshotted into a baseline, for delay/slip comparison later.
+BASELINE_FIELDS = ("spec_planned", "dev_start_planned", "build_planned", "fut_planned",
+                   "gantt_start", "gantt_delivery")
 SHEET_CANDIDATES = ["1.4.2 - Overall Rice Tracker_rb"]  # preferred sheet names
 ALLOWED_EXT = {".xlsx", ".xlsm", ".xls"}
 HOURS_PER_DEV_WEEK = 45.0
@@ -35,19 +39,22 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload cap
 
-# Program timeline (fixed configuration from the program plan).
+# Program timeline (fixed configuration from the program plan). "status" is
+# not stored here — it's derived from today's date vs start/end on every
+# request (see _phase_status), so it never drifts out of sync like a
+# hand-maintained field would.
 PROGRAM_TIMELINE = [
-    {"name": "Sprint 1", "type": "Sprint", "status": "Completed", "start": "2026-03-23", "end": "2026-05-01"},
-    {"name": "Sprint 2", "type": "Sprint", "status": "In Progress", "start": "2026-06-22", "end": "2026-07-17"},
-    {"name": "Sprint 3", "type": "Sprint", "status": "Planned", "start": "2026-07-27", "end": "2026-08-21"},
-    {"name": "SIT 1", "type": "SIT", "status": "Planned", "start": "2026-09-28", "end": "2026-10-30"},
-    {"name": "SIT 2", "type": "SIT", "status": "Planned", "start": "2026-11-09", "end": "2026-12-11"},
-    {"name": "UAT", "type": "UAT", "status": "Planned", "start": "2026-12-14", "end": "2027-01-15"},
-    {"name": "Cutover", "type": "Cutover", "status": "Planned", "start": "2027-01-18", "end": "2027-02-07"},
+    {"name": "Sprint 1", "type": "Sprint", "start": "2026-03-23", "end": "2026-05-01"},
+    {"name": "Sprint 2", "type": "Sprint", "start": "2026-06-22", "end": "2026-07-17"},
+    {"name": "Sprint 3", "type": "Sprint", "start": "2026-07-27", "end": "2026-08-21"},
+    {"name": "SIT 1", "type": "SIT", "start": "2026-09-28", "end": "2026-10-30"},
+    {"name": "SIT 2", "type": "SIT", "start": "2026-11-09", "end": "2026-12-11"},
+    {"name": "UAT", "type": "UAT", "start": "2026-12-14", "end": "2027-01-15"},
+    {"name": "Cutover", "type": "Cutover", "start": "2027-01-18", "end": "2027-02-07"},
     # Open-ended catch-all: anything delivered after Cutover lands here rather
     # than falling through to Unscheduled. "end" is a far-future sentinel, not
     # a real program date — open_ended tells the UI to render/scale it as "onward".
-    {"name": "Post Go-Live", "type": "Milestone", "status": "Planned", "start": "2027-02-08", "end": "2099-12-31", "open_ended": True},
+    {"name": "Post Go-Live", "type": "Milestone", "start": "2027-02-08", "end": "2099-12-31", "open_ended": True},
 ]
 
 
@@ -67,7 +74,6 @@ def _with_gaps(program_timeline):
             expanded.append({
                 "name": f"Gap b/w {phase['name']} and {nxt['name']}",
                 "type": "Gap",
-                "status": "—",
                 "start": gap_start.strftime("%Y-%m-%d"),
                 "end": gap_end.strftime("%Y-%m-%d"),
             })
@@ -75,6 +81,22 @@ def _with_gaps(program_timeline):
 
 
 PROGRAM_TIMELINE_EXPANDED = _with_gaps(PROGRAM_TIMELINE)
+
+
+def _phase_status(phase, today):
+    """Completed / In Progress / Planned, derived from today vs the phase's
+    start/end — Gap tiles aren't real phases so they stay a placeholder."""
+    if phase["type"] == "Gap":
+        return "—"
+    start = pd.Timestamp(phase["start"])
+    if phase.get("open_ended"):
+        return "In Progress" if today >= start else "Planned"
+    end = pd.Timestamp(phase["end"])
+    if today > end:
+        return "Completed"
+    if today >= start:
+        return "In Progress"
+    return "Planned"
 
 # Column name -> canonical key. Matching is done by normalized prefix so the app
 # survives minor header drift (trailing notes, whitespace, case).
@@ -412,18 +434,71 @@ def process(path):
 
         records.append(rec)
 
+    baseline = _load_baseline()
+    _apply_baseline(records, baseline)
+
+    timeline_payload = [{**t, "status": _phase_status(t, today)} for t in PROGRAM_TIMELINE_EXPANDED]
+
     payload = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         "source_sheet": sheet,
         "record_count": len(records),
-        "timeline": PROGRAM_TIMELINE_EXPANDED,
+        "timeline": timeline_payload,
         "hours_per_dev_week": HOURS_PER_DEV_WEEK,
         "records": records,
         "filters": _filter_options(records),
         "data_quality": _data_quality(records),
         "summary": _summary(records),
+        "baseline_captured_at": baseline.get("captured_at"),
+        "baseline_count": len(baseline.get("items", {})),
     }
     return payload
+
+
+# --------------------------------------------------------------------------- #
+# Baselining — snapshot key dates so later runs can show delay/slip vs plan.
+# The workbook itself has no history (it's re-parsed from scratch every
+# request), so the baseline snapshot lives in its own JSON file, keyed by
+# RICE ID, and is merged onto records here rather than being part of the
+# per-row ingestion above.
+# --------------------------------------------------------------------------- #
+def _load_baseline():
+    if not os.path.exists(BASELINE_FILE):
+        return {}
+    try:
+        with open(BASELINE_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _store_baseline(baseline):
+    tmp = BASELINE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(baseline, fh, indent=2)
+    os.replace(tmp, BASELINE_FILE)
+
+
+def _apply_baseline(records, baseline):
+    """Attach baseline_<field> values + slip_days (current gantt_delivery vs
+    baseline gantt_delivery, in days — positive means later/delayed) to each
+    record in place. No-op if no baseline has been captured yet."""
+    items = baseline.get("items", {})
+    if not items:
+        return
+    for rec in records:
+        snap = items.get(rec.get("rice_id"))
+        if not snap:
+            continue
+        for field in BASELINE_FIELDS:
+            rec[f"baseline_{field}"] = snap.get(field)
+        cur = rec.get("gantt_delivery")
+        base = snap.get("gantt_delivery")
+        if cur and base:
+            rec["slip_days"] = (pd.Timestamp(cur) - pd.Timestamp(base)).days
+        else:
+            rec["slip_days"] = None
 
 
 def _uniq_sorted(values):
@@ -997,6 +1072,38 @@ def api_upload():
     with open(DATA_FILE, "wb") as out:
         out.write(raw)
     return jsonify({"ok": True, "message": "File uploaded and validated."})
+
+
+@app.route("/api/baseline", methods=["GET"])
+def api_baseline_get():
+    baseline = _load_baseline()
+    return jsonify({"captured_at": baseline.get("captured_at"), "count": len(baseline.get("items", {}))})
+
+
+@app.route("/api/baseline", methods=["POST"])
+def api_baseline_capture():
+    if not os.path.exists(DATA_FILE):
+        return jsonify({"error": "no_data", "message": "No data file found. Please upload a workbook."}), 404
+    try:
+        payload = process(DATA_FILE)
+    except Exception as exc:
+        return jsonify({"error": "processing_error", "message": str(exc)}), 500
+
+    captured_at = dt.datetime.now().isoformat(timespec="seconds")
+    items = {}
+    for rec in payload["records"]:
+        rid = rec.get("rice_id")
+        if not rid:
+            continue
+        items[rid] = {field: rec.get(field) for field in BASELINE_FIELDS}
+    _store_baseline({"captured_at": captured_at, "items": items})
+    return jsonify({"ok": True, "captured_at": captured_at, "count": len(items)})
+
+
+@app.route("/api/baseline", methods=["DELETE"])
+def api_baseline_clear():
+    _store_baseline({})
+    return jsonify({"ok": True})
 
 
 @app.route("/api/export")

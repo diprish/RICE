@@ -1,4 +1,5 @@
 .venv
 .DS_Store
 saved_filters.json
+baseline.json
 __pycache__/
