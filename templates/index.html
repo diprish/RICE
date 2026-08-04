@@ -159,7 +159,9 @@
 
   <!-- RESOURCE CAPACITY -->
   <section id="sec-capacity" class="block">
-    <h2 class="block-title">Resource Capacity <span class="muted">— developers needed per week (⌈hours ÷ 45⌉)</span></h2>
+    <h2 class="block-title">Resource Capacity <span class="muted">— developers needed per week (⌈hours ÷ 45⌉)</span>
+      <button type="button" class="export-btn" id="exportCapacity" title="Export to Excel">⭳ Excel</button>
+    </h2>
     <div id="capacityHeat" class="capacity-wrap"></div>
   </section>
 
@@ -202,11 +204,15 @@
     </h2>
     <div class="sd-cols">
       <div class="sd-card">
-        <div class="sd-head"><span class="sd-title">Delayed</span><span class="count-chip red" id="specDelayedCount">0</span></div>
+        <div class="sd-head"><span class="sd-title">Delayed</span><span class="count-chip red" id="specDelayedCount">0</span>
+          <button type="button" class="export-btn" id="exportSpecDelayed" title="Export to Excel">⭳ Excel</button>
+        </div>
         <div id="specDelayed" class="sd-scroll"></div>
       </div>
       <div class="sd-card">
-        <div class="sd-head"><span class="sd-title">Due This Week</span><span class="count-chip amber" id="specDueCount">0</span></div>
+        <div class="sd-head"><span class="sd-title">Due This Week</span><span class="count-chip amber" id="specDueCount">0</span>
+          <button type="button" class="export-btn" id="exportSpecDue" title="Export to Excel">⭳ Excel</button>
+        </div>
         <div id="specDueWeek" class="sd-scroll"></div>
       </div>
     </div>
@@ -217,12 +223,14 @@
       <div>
         <h2 class="block-title">Lean Spec Risk <span class="count-chip amber" id="leanRiskCount">0</span>
           <span class="muted">— F-Spec or Object Status = Delayed, or Spec date (Revised → else Planned) is overdue or due within 14 days (excludes Completed objects and specs already Actual)</span>
+          <button type="button" class="export-btn" id="exportLeanRisk" title="Export to Excel">⭳ Excel</button>
         </h2>
         <div id="leanRisk" class="risk-list"></div>
       </div>
       <div>
         <h2 class="block-title">Build Risk <span class="count-chip red" id="buildRiskCount">0</span>
           <span class="muted">— Dev Status = Delayed or Blocked, or Delivery date (Actual → else Planned) is overdue or due within 14 days while Dev % &lt; 100</span>
+          <button type="button" class="export-btn" id="exportBuildRisk" title="Export to Excel">⭳ Excel</button>
         </h2>
         <div id="buildRisk" class="risk-list"></div>
       </div>
@@ -233,13 +241,16 @@
   <section id="sec-owner" class="block">
     <h2 class="block-title">Owner Focus <span class="count-chip grey" id="ownerFocusCount">0</span>
       <span class="muted">— by Functional Owner: delayed objects &amp; lean spec due this week (Revised → else Planned)</span>
+      <button type="button" class="export-btn" id="exportOwnerFocus" title="Export to Excel">⭳ Excel</button>
     </h2>
     <div id="ownerFocus" class="owner-focus"></div>
   </section>
 
   <!-- MATRIX -->
   <section id="sec-matrix" class="block">
-    <h2 class="block-title">Delivery Matrix <span class="muted">— click any cell to filter the grid</span></h2>
+    <h2 class="block-title">Delivery Matrix <span class="muted">— click any cell to filter the grid</span>
+      <button type="button" class="export-btn" id="exportMatrix" title="Export to Excel">⭳ Excel</button>
+    </h2>
     <h3 class="sub-title">RICE Type × Raw Object Status</h3>
     <div id="matrixRaw" class="matrix-wrap"></div>
   </section>
@@ -273,6 +284,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/choices.js@10.2.0/public/assets/scripts/choices.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

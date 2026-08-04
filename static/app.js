@@ -66,6 +66,7 @@ const State = {
   baselines: [],          // [{id, name, captured_at, count}] — all captured baselines
   activeBaselineId: null, // which one the grid/Gantt currently compare against
   quick: {},             // transient quick-filters {rice_type, object_status, assigned_sprint}
+  tables: {},             // key -> row-array last rendered by an exportable panel, for the Excel buttons
   choices: {},
   allOptions: { org: [], module: [] },  // full universe of values, for "Select all"
 };
@@ -112,6 +113,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initPlanToggle();
   initResourcePlan();
   initModal();
+  initTableExports();
   $("#exportBtn").addEventListener("click", exportCSV);
   $("#reuploadBtn").addEventListener("click", () => {
     $("#uploadScreen").classList.add("show");
@@ -1264,6 +1266,23 @@ function renderCapacity(recs) {
          <tbody>${rowsTypes.map(typeRow).join("")}${totalRow()}</tbody></table>
      </div>`;
 
+  const exportRows = rowsTypes.map(type => {
+    const row = { "RICE Type": type };
+    cols.forEach(c => {
+      const cell = (data[c] && data[c][type]) || { hours: 0 };
+      row[fmtDate(c)] = Math.ceil(cell.hours / HPW) || 0;
+    });
+    return row;
+  });
+  const totalRowObj = { "RICE Type": "All Types" };
+  cols.forEach(c => {
+    let hrs = 0;
+    Object.values(data[c] || {}).forEach(o => { hrs += o.hours; });
+    totalRowObj[fmtDate(c)] = Math.ceil(hrs / HPW) || 0;
+  });
+  exportRows.push(totalRowObj);
+  State.tables.capacity = exportRows;
+
   $$(".heat-cell", $("#capacityHeat")).forEach(td => td.addEventListener("click", () => {
     const wk = td.dataset.wk, type = td.dataset.type;
     const cell = type ? (data[wk] && data[wk][type]) : null;
@@ -1290,6 +1309,18 @@ function renderRisk(recs) {
       const r = recs.find(x => x.rice_id === el.dataset.id);
       if (r) openModal(r.rice_id + " — " + r.object_name, [r], true);
     }));
+  State.tables.leanRisk = riskExportRows(lean, "spec");
+  State.tables.buildRisk = riskExportRows(build, "build");
+}
+function riskExportRows(list, kind) {
+  return list.map(r => ({
+    "RICE ID": r.rice_id, "Object Name": r.object_name, "Type": r.rice_type,
+    "Object Status": r.object_status || "",
+    [kind === "spec" ? "Spec Date" : "Delivery Date"]: (kind === "spec" ? r.spec_effective : r.delivery_date) || "",
+    [kind === "spec" ? "F-Spec Status" : "Dev Status"]: (kind === "spec" ? r.fspec_status : r.dev_status) || "",
+    [kind === "spec" ? "Spec %" : "Dev %"]: (kind === "spec" ? r.spec_pct : r.dev_pct) ?? "",
+    "Owner": r.functional_owner || r.technical_owner || "",
+  }));
 }
 function riskItems(list, kind) {
   if (!list.length) return `<div class="risk-empty">No objects flagged. ✓</div>`;
@@ -1351,11 +1382,26 @@ function renderSpecDeadlines(recs) {
   $("#specDueWeek").innerHTML = specTable(due, t, "due");
   $("#specDelayedCount").textContent = delayed.length;
   $("#specDueCount").textContent = due.length;
+  State.tables.specDelayed = delayed.map(r => specExportRow(r, t, "delayed"));
+  State.tables.specDue = due.map(r => specExportRow(r, t, "due"));
   $$("#specDelayed .sd-row, #specDueWeek .sd-row").forEach(el =>
     el.addEventListener("click", () => {
       const r = recs.find(x => x.rice_id === el.dataset.id);
       if (r) openModal(r.rice_id + " — " + r.object_name, [r], true);
     }));
+}
+
+function specExportRow(r, t, kind) {
+  const dateISO = specDueDate(r);
+  const days = Math.round((parseISO(dateISO) - t) / 86400000);
+  const row = {
+    "RICE ID": r.rice_id, "Object Name": r.object_name, "Type": r.rice_type, "Module": r.module || "",
+    "Spec Date": dateISO || "", "Source": r.spec_revised ? "Revised" : "Planned",
+  };
+  row[kind === "delayed" ? "Days Overdue" : "Days Until Due"] = kind === "delayed" ? Math.abs(days) : days;
+  row["Owner"] = r.functional_owner || "";
+  row["F-Spec Status"] = r.fspec_status || "";
+  return row;
 }
 
 function specTable(list, t, kind) {
@@ -1419,6 +1465,7 @@ function renderOwnerFocus(recs) {
   const el = $("#ownerFocus");
   if (!matches.length) {
     $("#ownerFocusCount").textContent = 0;
+    State.tables.ownerFocus = [];
     el.innerHTML = `<div class="risk-empty">No delayed or lean-spec-due-this-week objects in the current filter. ✓</div>`;
     return;
   }
@@ -1431,9 +1478,14 @@ function renderOwnerFocus(recs) {
   const owners = Object.keys(groups).sort((a, b) => a.localeCompare(b));
   $("#ownerFocusCount").textContent = owners.length;
 
+  const exportRows = [];
   el.innerHTML = owners.map(owner => {
     const items = groups[owner].sort((a, b) =>
       (parseISO(leanSpecDate(a.r)) || new Date(8640e12)) - (parseISO(leanSpecDate(b.r)) || new Date(8640e12)));
+    items.forEach(({ r, reasons }) => exportRows.push({
+      "Owner": owner, "RICE ID": r.rice_id, "Object Name": r.object_name, "Type": r.rice_type,
+      "Reasons": reasons.join(", "), "Object Status": r.object_status || "", "Spec Date": leanSpecDate(r) || "",
+    }));
     const delayedN = items.filter(i => i.reasons.includes("Delayed")).length;
     const dueN = items.filter(i => i.reasons.includes("Spec due this week")).length;
     return `<div class="owner-card">
@@ -1465,6 +1517,7 @@ function renderOwnerFocus(recs) {
       </div>
     </div>`;
   }).join("");
+  State.tables.ownerFocus = exportRows;
 
   $$("#ownerFocus .risk-item").forEach(item => item.addEventListener("click", () => {
     const r = recs.find(x => x.rice_id === item.dataset.id);
@@ -1499,6 +1552,19 @@ function buildMatrix(container, recs, rows, cols, field) {
   const totals = cols.map(c => recs.filter(r => r[field] === c).length);
   body += `<tr class="total-row"><td class="lbl">Total</td>${totals.map(n => `<td>${n}</td>`).join("")}<td class="total-col">${recs.length}</td></tr>`;
   container.innerHTML = `<table class="matrix"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+
+  const exportRows = rows.map(t => {
+    const row = { "RICE Type": t };
+    let rowTotal = 0;
+    cols.forEach(c => { const n = count(t, c); row[c] = n; rowTotal += n; });
+    row["Total"] = rowTotal;
+    return row;
+  });
+  const totalsRow = { "RICE Type": "Total" };
+  cols.forEach((c, i) => { totalsRow[c] = totals[i]; });
+  totalsRow["Total"] = recs.length;
+  exportRows.push(totalsRow);
+  State.tables.matrix = exportRows;
   $$(".cell", container).forEach(td => td.addEventListener("click", () => {
     const q = { rice_type: td.dataset.type };
     q[td.dataset.field] = td.dataset.col;
@@ -1796,4 +1862,34 @@ function exportCSV() {
   a.download = "rice_tracker_filtered.csv";
   a.click(); URL.revokeObjectURL(a.href);
   toast(`Exported ${recs.length} rows.`);
+}
+
+/* ============================================================
+   XLSX EXPORT — per-panel "Export to Excel" buttons. Each render function
+   below stashes the row-array it just built onto State.tables.<key>, so a
+   button click always exports exactly what's currently on screen (same
+   filtered/computed data, no re-derivation).
+   ============================================================ */
+function exportXLSX(filename, sheetName, rows) {
+  if (!rows || !rows.length) { toast("Nothing to export — no rows in this panel."); return; }
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31)); // Excel sheet-name length limit
+  XLSX.writeFile(wb, filename);
+  toast(`Exported ${rows.length} rows to ${filename}`);
+}
+
+function initTableExports() {
+  [
+    ["exportSpecDelayed", "specDelayed", "rice_spec_deadlines_delayed.xlsx", "Delayed"],
+    ["exportSpecDue", "specDue", "rice_spec_deadlines_due_this_week.xlsx", "Due This Week"],
+    ["exportLeanRisk", "leanRisk", "rice_lean_spec_risk.xlsx", "Lean Spec Risk"],
+    ["exportBuildRisk", "buildRisk", "rice_build_risk.xlsx", "Build Risk"],
+    ["exportOwnerFocus", "ownerFocus", "rice_owner_focus.xlsx", "Owner Focus"],
+    ["exportMatrix", "matrix", "rice_delivery_matrix.xlsx", "Matrix"],
+    ["exportCapacity", "capacity", "rice_resource_capacity.xlsx", "Capacity"],
+  ].forEach(([btnId, key, filename, sheet]) => {
+    const btn = $("#" + btnId);
+    if (btn) btn.addEventListener("click", () => exportXLSX(filename, sheet, State.tables[key]));
+  });
 }

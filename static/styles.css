@@ -187,6 +187,11 @@ code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px;
 .block-title { font-size: 17px; margin-bottom: 12px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; row-gap: 2px; }
 .sub-title { font-size: var(--fs-body); color: var(--text-2); margin: 16px 0 8px; text-transform: uppercase;
   letter-spacing: .04em; }
+.export-btn { border: none; background: var(--surface-2); color: var(--text-2); cursor: pointer;
+  padding: 3px 9px; border-radius: 20px; font-size: var(--fs-meta); font-weight: 600; letter-spacing: normal;
+  text-transform: none; display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.export-btn:hover { color: var(--dl-green-dark); background: rgba(134,188,37,.16); }
+[data-theme="dark"] .export-btn:hover { color: var(--dl-green); }
 .block-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 /* ---------- filter bar — command bar + popover (prototype 1C) ---------- */
