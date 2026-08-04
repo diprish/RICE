@@ -42,8 +42,21 @@
     <a href="#sec-dq">Data Quality</a>
   </nav>
   <div class="topactions">
-    <span id="baselineTag" class="baseline-tag hidden"></span>
-    <button id="baselineBtn" class="btn btn-ghost" title="Snapshot current planned/delivery dates so future changes can be measured as delay/slip">⚑ Set Baseline</button>
+    <div class="seg" id="schedToggle" title="Switch Sprint cards, Gantt, and Capacity between plan-of-record and recalculated delivery dates">
+      <button type="button" data-view="plan" class="active">Plan of Record</button>
+      <button type="button" data-view="recalc">Recalculated<span id="replanCount" class="replan-count hidden"></span></button>
+    </div>
+    <div class="fpill-wrap" data-dim="baselines" id="baselinesWrap">
+      <button type="button" class="btn btn-ghost" data-toggle title="Capture and compare named baselines against the current plan">
+        ⚑ <span id="baselinesPillLabel">Baselines</span>
+      </button>
+      <div class="fpop fpop-baselines" data-menu>
+        <div class="fpop-saved-list" id="baselineList"></div>
+        <div class="fpop-foot">
+          <button type="button" class="fpop-done" id="addBaselineBtn">＋ Add current as baseline</button>
+        </div>
+      </div>
+    </div>
     <button id="exportBtn" class="btn btn-ghost" title="Export filtered rows to CSV">⭳ CSV</button>
     <button id="themeBtn" class="btn btn-ghost" title="Toggle theme">◑ Theme</button>
   </div>
@@ -202,11 +215,15 @@
   <section id="sec-risk" class="block">
     <div class="risk-cols">
       <div>
-        <h2 class="block-title">Lean Spec Risk</h2>
+        <h2 class="block-title">Lean Spec Risk <span class="count-chip amber" id="leanRiskCount">0</span>
+          <span class="muted">— F-Spec or Object Status = Delayed, or Spec date (Revised → else Planned) is overdue or due within 14 days (excludes Completed objects and specs already Actual)</span>
+        </h2>
         <div id="leanRisk" class="risk-list"></div>
       </div>
       <div>
-        <h2 class="block-title">Build Risk</h2>
+        <h2 class="block-title">Build Risk <span class="count-chip red" id="buildRiskCount">0</span>
+          <span class="muted">— Dev Status = Delayed or Blocked, or Delivery date (Actual → else Planned) is overdue or due within 14 days while Dev % &lt; 100</span>
+        </h2>
         <div id="buildRisk" class="risk-list"></div>
       </div>
     </div>
@@ -214,7 +231,7 @@
 
   <!-- OWNER FOCUS -->
   <section id="sec-owner" class="block">
-    <h2 class="block-title">Owner Focus
+    <h2 class="block-title">Owner Focus <span class="count-chip grey" id="ownerFocusCount">0</span>
       <span class="muted">— by Functional Owner: delayed objects &amp; lean spec due this week (Revised → else Planned)</span>
     </h2>
     <div id="ownerFocus" class="owner-focus"></div>

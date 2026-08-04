@@ -62,10 +62,19 @@ const State = {
   charts: {},            // donut chart instances by id
   gridApi: null,
   planView: "grid",
+  scheduleView: "plan",   // "plan" (plan-of-record) | "recalc" (recalculated delivery)
+  baselines: [],          // [{id, name, captured_at, count}] — all captured baselines
+  activeBaselineId: null, // which one the grid/Gantt currently compare against
   quick: {},             // transient quick-filters {rice_type, object_status, assigned_sprint}
   choices: {},
   allOptions: { org: [], module: [] },  // full universe of values, for "Select all"
 };
+// Sprint cards, Gantt, and Capacity all read the schedule through these three
+// helpers rather than the raw fields directly, so State.scheduleView is the
+// single switch that moves them between plan-of-record and recalculated dates.
+const schedStart = (r) => State.scheduleView === "recalc" ? r.recalc_start : r.gantt_start;
+const schedDelivery = (r) => State.scheduleView === "recalc" ? r.recalc_delivery : r.gantt_delivery;
+const schedSprint = (r) => State.scheduleView === "recalc" ? r.recalc_sprint : r.assigned_sprint;
 
 /* ---------------- helpers ---------------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -97,7 +106,8 @@ document.addEventListener("DOMContentLoaded", () => {
   initTheme();
   initUpload();
   initTopbar();
-  initBaseline();
+  initBaselines();
+  initSchedToggle();
   initFilters();
   initPlanToggle();
   initResourcePlan();
@@ -140,47 +150,98 @@ function initTopbar() {
 }
 
 /* ============================================================
-   BASELINING — snapshot current planned/delivery dates so later
-   loads can show delay/slip against that fixed point in time.
+   BASELINES — named snapshots of planned/delivery dates. Multiple can
+   exist; the one picked here is compared against current dates in the
+   grid (Baseline Start/Delivery/Slip columns) and Gantt (ghost bars).
+   Persisted server-side in baselines.json, independent of the uploaded
+   workbook, so re-uploading a new file never drops them.
    ============================================================ */
-function renderBaselineStatus() {
-  const tag = $("#baselineTag"), btn = $("#baselineBtn");
-  const capturedAt = State.data && State.data.baseline_captured_at;
-  if (capturedAt) {
-    const d = new Date(capturedAt);
-    tag.innerHTML = `Baseline: ${d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })}` +
-      `<button id="baselineClearBtn" class="baseline-clear" title="Clear baseline">✕</button>`;
-    tag.classList.remove("hidden");
-    btn.textContent = "↻ Re-baseline";
+function renderBaselineList() {
+  const list = $("#baselineList");
+  if (!State.baselines.length) {
+    list.innerHTML = `<div class="fsaved-empty">No baselines captured yet</div>`;
   } else {
-    tag.classList.add("hidden");
-    tag.innerHTML = "";
-    btn.textContent = "⚑ Set Baseline";
+    list.innerHTML = State.baselines.map(b => {
+      const d = new Date(b.captured_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" });
+      const on = b.id === State.activeBaselineId;
+      return `<div class="baseline-row ${on ? "on" : ""}">
+        <button type="button" class="baseline-select" data-select="${esc(b.id)}">
+          <span class="fpop-radio ${on ? "on" : ""}">${on ? CHECK_SVG : ""}</span>
+          <span class="baseline-meta"><b>${esc(b.name)}</b><span class="muted">${d} · ${b.count} objects</span></span>
+        </button>
+        <button type="button" class="baseline-rename" data-rename="${esc(b.id)}" title="Rename">✎</button>
+        <button type="button" class="fsaved-del" data-del="${esc(b.id)}" title="Delete">✕</button>
+      </div>`;
+    }).join("");
   }
+  $$(".baseline-select", list).forEach(b => b.addEventListener("click", () => selectBaseline(b.dataset.select)));
+  $$(".baseline-rename", list).forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); renameBaseline(b.dataset.rename); }));
+  $$(".fsaved-del", list).forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); deleteBaseline(b.dataset.del); }));
+  const active = State.baselines.find(b => b.id === State.activeBaselineId);
+  $("#baselinesPillLabel").textContent = active ? active.name : (State.baselines.length ? "Select baseline" : "Baselines");
 }
 
-function initBaseline() {
-  $("#baselineBtn").addEventListener("click", async () => {
-    const has = State.data && State.data.baseline_captured_at;
-    if (has && !confirm("Re-capture the baseline from today's dates? This replaces the existing baseline.")) return;
-    try {
-      const r = await fetch("/api/baseline", { method: "POST" });
-      const j = await r.json();
-      if (!r.ok || !j.ok) { toast("Error: " + (j.message || "Could not set baseline.")); return; }
-      toast(`Baseline captured for ${j.count} objects.`);
-      await loadData();
-    } catch (e) { toast("Network error: " + e.message); }
-  });
-  document.addEventListener("click", async (e) => {
-    if (e.target.id !== "baselineClearBtn") return;
-    e.stopPropagation();
-    if (!confirm("Clear the current baseline? Slip/delay columns will disappear until a new baseline is set.")) return;
-    try {
-      await fetch("/api/baseline", { method: "DELETE" });
-      toast("Baseline cleared.");
-      await loadData();
-    } catch (e) { toast("Network error: " + e.message); }
-  });
+async function selectBaseline(id) {
+  togglePopover($("#baselinesWrap"), false);
+  if (id === State.activeBaselineId) return;
+  State.activeBaselineId = id;
+  try { localStorage.setItem("rice-baseline-id", id); } catch {}
+  await loadData();
+}
+
+async function addBaseline() {
+  const name = prompt('Name this baseline (e.g. "Sprint 1 Kickoff"):', "");
+  if (name === null) return; // cancelled
+  try {
+    const r = await fetch("/api/baselines", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) { toast("Error: " + (j.message || "Could not capture baseline.")); return; }
+    toast(`Baseline "${j.baseline.name}" captured for ${j.baseline.count} objects.`);
+    State.activeBaselineId = j.baseline.id;
+    try { localStorage.setItem("rice-baseline-id", j.baseline.id); } catch {}
+    togglePopover($("#baselinesWrap"), false);
+    await loadData();
+  } catch (e) { toast("Network error: " + e.message); }
+}
+
+async function renameBaseline(id) {
+  const b = State.baselines.find(x => x.id === id);
+  const name = prompt("Rename baseline:", b ? b.name : "");
+  if (!name || !name.trim()) return;
+  try {
+    const r = await fetch(`/api/baselines/${encodeURIComponent(id)}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) { toast("Error: " + (j.message || "Could not rename baseline.")); return; }
+    toast("Baseline renamed.");
+    await loadData();
+  } catch (e) { toast("Network error: " + e.message); }
+}
+
+async function deleteBaseline(id) {
+  const b = State.baselines.find(x => x.id === id);
+  if (!confirm(`Delete baseline "${b ? b.name : id}"? This cannot be undone.`)) return;
+  try {
+    await fetch(`/api/baselines/${encodeURIComponent(id)}`, { method: "DELETE" });
+    toast("Baseline deleted.");
+    if (State.activeBaselineId === id) {
+      State.activeBaselineId = null;
+      try { localStorage.removeItem("rice-baseline-id"); } catch {}
+    }
+    await loadData();
+  } catch (e) { toast("Network error: " + e.message); }
+}
+
+function initBaselines() {
+  const wrap = $("#baselinesWrap");
+  $("[data-toggle]", wrap).addEventListener("click", (e) => { e.stopPropagation(); togglePopover(wrap); });
+  $("#addBaselineBtn").addEventListener("click", addBaseline);
+  try { State.activeBaselineId = localStorage.getItem("rice-baseline-id") || null; } catch { State.activeBaselineId = null; }
 }
 
 /* ============================================================
@@ -224,7 +285,8 @@ async function uploadFile(file) {
    ============================================================ */
 async function loadData() {
   try {
-    const r = await fetch("/api/data");
+    const q = State.activeBaselineId ? `?baseline_id=${encodeURIComponent(State.activeBaselineId)}` : "";
+    const r = await fetch("/api/data" + q);
     if (r.status === 404) {
       $("#uploadScreen").classList.add("show");
       $("#dashboard").classList.remove("show");
@@ -234,7 +296,17 @@ async function loadData() {
     if (j.error) { toast("Error: " + j.message); return; }
     State.data = j;
     populateFilterOptions(j);
-    renderBaselineStatus();
+    State.baselines = j.baselines || [];
+    State.activeBaselineId = j.active_baseline_id;
+    try {
+      if (State.activeBaselineId) localStorage.setItem("rice-baseline-id", State.activeBaselineId);
+      else localStorage.removeItem("rice-baseline-id");
+    } catch {}
+    renderBaselineList();
+    const replanCount = $("#replanCount");
+    const n = j.summary.needs_replan_count || 0;
+    replanCount.textContent = n;
+    replanCount.classList.toggle("hidden", n === 0);
     $("#footMeta").textContent =
       `Source sheet: ${j.source_sheet} · ${j.record_count} objects · generated ${j.generated_at.replace("T", " ")}`;
     $("#brandSub").textContent = `${j.summary.total_in_scope} in-scope of ${j.record_count} RICE objects`;
@@ -552,7 +624,7 @@ function applyFilters() {
     }
     if (q.rice_type && r.rice_type !== q.rice_type) return false;
     if (q.object_status && r.object_status !== q.object_status) return false;
-    if (q.assigned_sprint && r.assigned_sprint !== q.assigned_sprint) return false;
+    if (q.assigned_sprint && schedSprint(r) !== q.assigned_sprint) return false;
     return true;
   });
   updateResultCount();
@@ -780,7 +852,7 @@ function renderSprintSummary(recs) {
   const groups = {};
   phases.forEach(p => groups[p.name] = []);
   groups["Unscheduled"] = [];
-  recs.forEach(r => { if (groups[r.assigned_sprint]) groups[r.assigned_sprint].push(r); });
+  recs.forEach(r => { const s = schedSprint(r); if (groups[s]) groups[s].push(r); });
 
   // Shared color key — the bar segments across every card use statusColor(),
   // so one legend of the statuses actually present explains them all.
@@ -800,7 +872,7 @@ function renderSprintSummary(recs) {
       `<span>${esc(s)}<b> ${sc[s]}</b></span>`).join("") || `<span class="muted">no objects</span>`;
     const dates = p.start ? (p.open_ended ? `${fmtDate(p.start)} onward` : `${fmtDate(p.start)} – ${fmtDate(p.end)}`) : "Not date-assigned";
     return `<div class="sprint-card phase-${esc(p.type)}" data-sprint="${esc(p.name)}">
-      <div class="sprint-head"><h3>${esc(p.name)}</h3><span class="sprint-status">${esc(p.status)}</span></div>
+      <div class="sprint-head"><h3>${esc(p.name)}</h3><span class="sprint-status sprint-status-${slug(p.status)}">${esc(p.status)}</span></div>
       <div class="sprint-dates">${dates}</div>
       <div class="sprint-count">${list.length}</div>
       <div class="sprint-bar">${seg}</div>
@@ -857,8 +929,17 @@ function gridColumns() {
       headerName: "Slip (days)", field: "slip_days", width: 120, type: "numericColumn",
       valueFormatter: p => p.value == null ? "—" : (p.value > 0 ? "+" : "") + p.value,
       cellClass: p => p.value == null ? "" : p.value > 0 ? "cell-slip-late" : p.value < 0 ? "cell-slip-early" : "cell-slip-flat",
+      tooltipValueGetter: p => p.value == null ? "" :
+        (p.data.delivered ? "Actual delivery vs baseline" : "Current forecast vs baseline — not yet delivered"),
     },
     { headerName: "Assigned Sprint", field: "assigned_sprint", width: 140 },
+    {
+      headerName: "Needs Replan", field: "needs_replan", width: 130,
+      cellRenderer: p => p.value ? `<span class="replan-badge">⚠ Replan</span>` : `<span class="muted">—</span>`,
+    },
+    { headerName: "Recalc Start", field: "recalc_start", width: 120, valueFormatter: p => fmtDate(p.value) },
+    { headerName: "Recalc Delivery", field: "recalc_delivery", width: 130, valueFormatter: p => fmtDate(p.value) },
+    { headerName: "Recalc Sprint", field: "recalc_sprint", width: 140 },
     { headerName: "Source", field: "source_system", width: 150 },
     { headerName: "Target", field: "target_system", width: 150 },
   ];
@@ -909,6 +990,16 @@ function renderGrid(recs) {
   }
 }
 
+function initSchedToggle() {
+  $$("#schedToggle button").forEach(b => b.addEventListener("click", () => {
+    if (State.scheduleView === b.dataset.view) return;
+    $$("#schedToggle button").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    State.scheduleView = b.dataset.view;
+    applyFilters();
+  }));
+}
+
 function initPlanToggle() {
   $$("#planToggle button").forEach(b => b.addEventListener("click", () => {
     $$("#planToggle button").forEach(x => x.classList.remove("active"));
@@ -927,7 +1018,7 @@ function initPlanToggle() {
    GANTT  (signature visual)
    ============================================================ */
 function renderGantt(recs) {
-  const rows = recs.filter(r => r.gantt_start && r.gantt_delivery)
+  const rows = recs.filter(r => schedStart(r) && schedDelivery(r))
     .sort((a, b) => {
       const ta = TYPE_ORDER.indexOf(a.rice_type), tb = TYPE_ORDER.indexOf(b.rice_type);
       const ra = ta === -1 ? TYPE_ORDER.length : ta, rb = tb === -1 ? TYPE_ORDER.length : tb;
@@ -936,6 +1027,7 @@ function renderGantt(recs) {
       return (a.rice_id || "").localeCompare(b.rice_id || "", undefined, { numeric: true });
     });
   const wrap = $("#ganttScroll");
+  const activeBaseline = State.baselines.find(b => b.id === State.activeBaselineId);
 
   // Legend — build bars are colored by RICE type, so key the types actually
   // present (in canonical order), then the shared markers. Kept in sync with
@@ -953,8 +1045,9 @@ function renderGantt(recs) {
       `<span><i class="g-diamond"></i> Spec complete</span>` +
       `<span><i class="g-dot"></i> Delivery</span>` +
       `<span><i class="g-bar g-est"></i> Estimated (faded)</span>` +
-      (State.data.baseline_captured_at ? `<span><i class="g-bar g-baseline"></i> Baseline (as of ${fmtDate(State.data.baseline_captured_at.slice(0, 10))})</span>` : "") +
-      `<span class="muted">| Phase shading behind timeline · current week highlighted</span>`;
+      `<span><i class="g-bar g-replan"></i> Needs replan (spec now lands after dev start)</span>` +
+      (activeBaseline ? `<span><i class="g-bar g-baseline"></i> Baseline: ${esc(activeBaseline.name)} (${fmtDate(activeBaseline.captured_at.slice(0, 10))})</span>` : "") +
+      `<span class="muted">| Showing ${State.scheduleView === "recalc" ? "<b>recalculated</b> delivery" : "<b>plan-of-record</b> delivery"} · Phase shading behind timeline · current week highlighted</span>`;
   }
 
   if (!rows.length) { wrap.innerHTML = `<div class="risk-empty">No objects with scheduling dates in the current filter.</div>`; return; }
@@ -966,7 +1059,7 @@ function renderGantt(recs) {
   const boundedTl = tl.filter(p => !p.open_ended);
   let minD = parseISO(tl[0].start), maxD = parseISO((boundedTl[boundedTl.length - 1] || tl[tl.length - 1]).end);
   rows.forEach(r => {
-    const s = parseISO(r.gantt_start), d = parseISO(r.gantt_delivery), sp = parseISO(r.gantt_spec);
+    const s = parseISO(schedStart(r)), d = parseISO(schedDelivery(r)), sp = parseISO(r.gantt_spec);
     const bs = parseISO(r.baseline_gantt_start), bd = parseISO(r.baseline_gantt_delivery);
     [s, d, sp, bs, bd].forEach(x => { if (x && x < minD) minD = x; if (x && x > maxD) maxD = x; });
   });
@@ -1025,7 +1118,8 @@ function renderGantt(recs) {
   let bars = "";
   rows.forEach((r, i) => {
     const y = TOP + i * ROW_H, cy = y + ROW_H / 2;
-    const xs = x(parseISO(r.gantt_start)), xd = x(parseISO(r.gantt_delivery));
+    const start = schedStart(r), delivery = schedDelivery(r);
+    const xs = x(parseISO(start)), xd = x(parseISO(delivery));
     const barColor = TYPE_COLOR[r.rice_type] || "#00A3E0";
     if (i % 2 === 0) bars += `<rect x="${LABEL_W}" y="${y}" width="${PX_W + 20}" height="${ROW_H}" fill="var(--surface-2)" opacity=".5"/>`;
     // label
@@ -1035,19 +1129,23 @@ function renderGantt(recs) {
     // baseline ghost bar — drawn above the current bar so both are visible at once
     if (r.baseline_gantt_start && r.baseline_gantt_delivery) {
       const bxs = x(parseISO(r.baseline_gantt_start)), bxd = x(parseISO(r.baseline_gantt_delivery));
+      const slipLabel = r.slip_days == null ? "" :
+        ` (${r.delivered ? "actual" : "forecast"} ${r.slip_days > 0 ? "+" : ""}${r.slip_days}d vs ${activeBaseline ? esc(activeBaseline.name) : "baseline"})`;
       bars += `<rect x="${bxs}" y="${cy - 9}" width="${Math.max(bxd - bxs, 2)}" height="4" rx="2" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="3 2" opacity=".85">
-        <title>${esc(r.rice_id)} — baseline ${fmtDate(r.baseline_gantt_start)} → ${fmtDate(r.baseline_gantt_delivery)}${r.slip_days != null ? ` (slip ${r.slip_days > 0 ? "+" : ""}${r.slip_days}d)` : ""}</title></rect>`;
+        <title>${esc(r.rice_id)} — baseline ${fmtDate(r.baseline_gantt_start)} → ${fmtDate(r.baseline_gantt_delivery)}${slipLabel}</title></rect>`;
     }
-    // build bar
-    bars += `<rect x="${xs}" y="${cy - 4}" width="${Math.max(xd - xs, 2)}" height="8" rx="3" fill="${barColor}" opacity="${r.gantt_delivery_estimated ? .5 : .9}">
-      <title>${esc(r.rice_id)} — build ${fmtDate(r.gantt_start)} → ${fmtDate(r.gantt_delivery)}${r.gantt_delivery_estimated ? " (est)" : ""}</title></rect>`;
+    // build bar — a dashed amber outline flags objects whose revised spec date
+    // now lands after planned dev start (needs_replan), in either schedule view
+    const replanStroke = r.needs_replan ? `stroke="var(--dl-orange)" stroke-width="1.5" stroke-dasharray="3 2"` : "";
+    bars += `<rect x="${xs}" y="${cy - 4}" width="${Math.max(xd - xs, 2)}" height="8" rx="3" fill="${barColor}" opacity="${r.gantt_delivery_estimated ? .5 : .9}" ${replanStroke}>
+      <title>${esc(r.rice_id)} — build ${fmtDate(start)} → ${fmtDate(delivery)}${r.gantt_delivery_estimated ? " (est)" : ""}${r.needs_replan ? "\nNeeds replan — spec now lands after planned dev start" : ""}</title></rect>`;
     // spec diamond
     if (r.gantt_spec) {
       const sx = x(parseISO(r.gantt_spec));
       bars += `<rect x="${sx - 5}" y="${cy - 5}" width="10" height="10" transform="rotate(45 ${sx} ${cy})" fill="var(--text)" stroke="var(--surface)" stroke-width="1"><title>Spec complete ${fmtDate(r.gantt_spec)}</title></rect>`;
     }
     // delivery dot
-    bars += `<circle cx="${xd}" cy="${cy}" r="5" fill="#ED8B00" stroke="var(--surface)" stroke-width="1.5"><title>Delivery ${fmtDate(r.gantt_delivery)}</title></circle>`;
+    bars += `<circle cx="${xd}" cy="${cy}" r="5" fill="#ED8B00" stroke="var(--surface)" stroke-width="1.5"><title>Delivery ${fmtDate(delivery)}</title></circle>`;
   });
   // frozen label backdrop
   const labelBg = `<rect x="0" y="0" width="${LABEL_W}" height="${H}" fill="var(--surface)"/>
@@ -1061,8 +1159,11 @@ function renderGantt(recs) {
       <g>${rows.map((r, i) => {
         const cy = TOP + i * ROW_H + ROW_H / 2;
         const nm = (r.object_name || "").length > 30 ? r.object_name.slice(0, 29) + "…" : r.object_name;
+        const warn = r.needs_replan
+          ? `<text x="${LABEL_W - 16}" y="${cy + 4}" font-size="11" fill="var(--dl-orange)">⚠<title>Needs replan — spec now lands after planned dev start</title></text>`
+          : "";
         return `<text x="8" y="${cy - 3}" font-size="10.5" font-weight="700" fill="var(--text)">${esc(r.rice_id)}</text>
-                <text x="8" y="${cy + 9}" font-size="9.5" fill="var(--text-2)">${esc(nm)}</text>`;
+                <text x="8" y="${cy + 9}" font-size="9.5" fill="var(--text-2)">${esc(nm)}</text>${warn}`;
       }).join("")}</g>
     </svg>`;
 }
@@ -1095,8 +1196,9 @@ function renderCapacity(recs) {
   };
 
   recs.forEach(r => {
-    if (!r.build_hours || !r.gantt_start || !r.gantt_delivery) return;
-    const s = parseISO(r.gantt_start), d = parseISO(r.gantt_delivery);
+    const start = schedStart(r), delivery = schedDelivery(r);
+    if (!r.build_hours || !start || !delivery) return;
+    const s = parseISO(start), d = parseISO(delivery);
     if (s < minD) minD = s; if (d > maxD) maxD = d;
     const weeks = [];
     let w = new Date(s); w.setDate(w.getDate() - ((w.getDay() + 6) % 7));
@@ -1179,6 +1281,8 @@ function renderCapacity(recs) {
 function renderRisk(recs) {
   const lean = recs.filter(r => r.lean_spec_risk);
   const build = recs.filter(r => r.build_risk);
+  $("#leanRiskCount").textContent = lean.length;
+  $("#buildRiskCount").textContent = build.length;
   $("#leanRisk").innerHTML = riskItems(lean, "spec");
   $("#buildRisk").innerHTML = riskItems(build, "build");
   $$("#leanRisk .risk-item, #buildRisk .risk-item").forEach(el =>
@@ -1205,6 +1309,7 @@ function riskItems(list, kind) {
         <span class="ri-id">${esc(r.rice_id)}</span>
         <span>${esc(r.rice_type)}</span>
         <span>${kind === "spec" ? "Spec" : "Delivery"}: ${fmtDate(date)}</span>
+        <span>Dev Start (Plan): ${fmtDate(r.dev_start_planned)}</span>
         <span>${esc(stat)}${pct != null ? " · " + Math.round(pct) + "%" : ""}</span>
         <span>${esc(r.functional_owner || r.technical_owner || "—")}</span>
       </div></div>`;
@@ -1313,6 +1418,7 @@ function renderOwnerFocus(recs) {
 
   const el = $("#ownerFocus");
   if (!matches.length) {
+    $("#ownerFocusCount").textContent = 0;
     el.innerHTML = `<div class="risk-empty">No delayed or lean-spec-due-this-week objects in the current filter. ✓</div>`;
     return;
   }
@@ -1323,6 +1429,7 @@ function renderOwnerFocus(recs) {
     (groups[owner] = groups[owner] || []).push(m);
   });
   const owners = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+  $("#ownerFocusCount").textContent = owners.length;
 
   el.innerHTML = owners.map(owner => {
     const items = groups[owner].sort((a, b) =>
@@ -1469,7 +1576,7 @@ function closeModal() { $("#modal").classList.add("hidden"); }
    RESOURCE PLAN — fixed scope (Deloitte · In Scope · ≠ARCS · no
    Conversions), independent of the dashboard filters above.
    ============================================================ */
-const RP_SCENARIOS = ["aggressive", "optimized", "conservative", "two_wave"];
+const RP_SCENARIOS = ["aggressive", "optimized", "conservative", "two_wave", "replan_recovery"];
 State.rp = { plan: null, scenario: "optimized" };
 
 function initResourcePlan() {
@@ -1506,7 +1613,8 @@ function renderResourcePlan() {
   const scope = plan.scope;
   $("#rpScopeNote").textContent =
     `— ${scope.description} · ${scope.open} open of ${scope.objects} objects · ${fmtNum(scope.planned_hours)} hrs remaining` +
-    (scope.estimated_objects ? ` · ${scope.estimated_objects} with estimated hours` : "");
+    (scope.estimated_objects ? ` · ${scope.estimated_objects} with estimated hours` : "") +
+    (plan.replan_objects.length ? ` · ${plan.replan_objects.length} need replanning (see Replan Recovery)` : "");
 
   $("#rpScenarioSeg").innerHTML = RP_SCENARIOS.map(key =>
     `<button data-sc="${key}" class="${key === State.rp.scenario ? "active" : ""}">${plan.scenarios[key].label}</button>`).join("");
@@ -1632,9 +1740,9 @@ function renderRpTimeline(plan, sc) {
   const rows = sc.resources.map(r => {
     const bars = r.assignments.map(a => {
       const l = pct(a.start), w = Math.max(pct(a.end) - l, 0.5);
-      return `<div class="rp-bar ${a.late ? "late" : ""}" data-id="${esc(a.rice_id)}"
+      return `<div class="rp-bar ${a.late ? "late" : ""} ${a.needs_replan ? "replan" : ""}" data-id="${esc(a.rice_id)}"
         style="left:${l.toFixed(2)}%;width:${w.toFixed(2)}%;background:${TYPE_COLOR[a.rice_type] || "#75787B"}"
-        title="${esc(a.rice_id)} · ${esc(a.object_name)} · ${esc(a.complexity)} · ${a.hours}h${a.estimated ? " (estimated)" : ""} · ${fmtDate(a.start)} → ${fmtDate(a.end)}${a.late ? " · misses " + fmtDate(a.deadline) + " deadline" : ""}">${esc(a.rice_id)}</div>`;
+        title="${esc(a.rice_id)} · ${esc(a.object_name)} · ${esc(a.complexity)} · ${a.hours}h${a.estimated ? " (estimated)" : ""} · ${fmtDate(a.start)} → ${fmtDate(a.end)}${a.late ? " · misses " + fmtDate(a.deadline) + " deadline" : ""}${a.needs_replan ? " · needs replan — spec slipped past dev start" : ""}">${esc(a.rice_id)}</div>`;
     }).join("");
     return `<div class="rp-row">
       <div class="rp-lbl"><b><i class="rp-lbl-dot" style="background:${TYPE_COLOR[r.rice_type] || "#75787B"}"></i>${esc(r.name)}</b><span>${fmtDate(r.onboard)} → ${fmtDate(r.rolloff)} · ${r.utilization}%</span></div>
@@ -1644,7 +1752,8 @@ function renderRpTimeline(plan, sc) {
 
   const legend = ["Integration", "Extension", "Report"]
     .map(ty => `<span><i style="background:${TYPE_COLOR[ty]}"></i> ${ty}</span>`).join("") +
-    `<span><i class="late-demo"></i> misses deadline</span>`;
+    `<span><i class="late-demo"></i> misses deadline</span>` +
+    `<span><i class="replan-demo"></i> needs replan</span>`;
   $("#rpTimeline").innerHTML =
     `<div class="rp-tl-legend">${legend}</div>
      <div class="rp-tl">
@@ -1662,7 +1771,7 @@ function renderRpMisses(sc) {
   $("#rpMisses").innerHTML =
     `<h3 class="sub-title">Objects missing their deadline <span class="muted">— ${sc.misses.length} objects · schedule more onboards or move them to a later wave</span></h3>
      <div class="rp-miss-list">` + sc.misses.map(m =>
-      `<div class="rp-miss"><b>${esc(m.rice_id)}</b> ${esc(m.object_name)}
+      `<div class="rp-miss ${m.needs_replan ? "replan" : ""}"><b>${esc(m.rice_id)}</b> ${esc(m.object_name)}${m.needs_replan ? ` <span class="replan-badge">⚠ Replan</span>` : ""}
         <span class="muted">${esc(m.rice_type)} · ${m.hours}h · lands ${fmtDate(m.finish)} vs deadline ${fmtDate(m.deadline)}</span></div>`
     ).join("") + `</div>`;
 }
