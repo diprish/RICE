@@ -55,6 +55,20 @@ const PHASE_FILL = {
 function phaseFillFor(name, type) {
   return PHASE_FILL[name] || (type === "Gap" ? "rgba(117,120,123,.12)" : "rgba(0,0,0,.03)");
 }
+// Solid phase colors for the Program Timeline bars — per-name (sprints differ by
+// number) with a type-level fallback, so a new phase still gets a sensible color.
+const PHASE_BAR_NAME = {
+  "Sprint 1": "#86BC25", "Sprint 2": "#00A3E0", "Sprint 3": "#6E2585",
+  "SIT 1": "#ED8B00", "SIT 2": "#ED8B00", "UAT": "#9D6BB8",
+  "Cutover": "#DA291C", "Post Go-Live": "#00A3E0",
+};
+const PHASE_BAR_TYPE = {
+  "Sprint": "#00A3E0", "SIT": "#ED8B00", "UAT": "#9D6BB8",
+  "Cutover": "#DA291C", "Milestone": "#00A3E0",
+};
+function phaseBarColor(name, type) {
+  return PHASE_BAR_NAME[name] || PHASE_BAR_TYPE[type] || "#75787B";
+}
 
 const State = {
   data: null,            // full payload
@@ -735,6 +749,7 @@ function renderAll(recs) {
   renderTypeCards(recs);
   renderRawStatus(recs);
   renderSprintSummary(recs);
+  renderProgramTimeline(recs);
   renderGrid(recs);
   if (State.planView === "gantt") renderGantt(recs);
   renderCapacity(recs);
@@ -883,6 +898,122 @@ function renderSprintSummary(recs) {
   }).join("");
   $$(".sprint-card", $("#sprintSummary")).forEach(c =>
     c.addEventListener("click", () => setQuick({ assigned_sprint: c.dataset.sprint })));
+}
+
+/* ============================================================
+   PROGRAM TIMELINE — phase-level Gantt (Sprints / SITs / UAT /
+   Cutover / Post Go-Live) so the program schedule reads at a glance.
+   ============================================================ */
+function renderProgramTimeline(recs) {
+  const wrap = $("#timelineScroll");
+  if (!wrap) return;
+  // Real program phases only — Gap tiles are synthetic filler, not milestones.
+  const phases = State.data.timeline.filter(p => p.type !== "Gap");
+  if (!phases.length) { wrap.innerHTML = `<div class="risk-empty">No program timeline configured.</div>`; return; }
+
+  // Object counts per phase (from the current filter), so each bar shows load.
+  const counts = {};
+  phases.forEach(p => counts[p.name] = 0);
+  recs.forEach(r => { const s = schedSprint(r); if (counts[s] != null) counts[s] += 1; });
+
+  // Axis range — anchor the end on the last bounded phase so the far-future
+  // Post Go-Live sentinel doesn't blow up the scale (same trick as the Gantt).
+  const bounded = phases.filter(p => !p.open_ended);
+  let minD = parseISO(phases[0].start);
+  let maxD = parseISO((bounded[bounded.length - 1] || phases[phases.length - 1]).end);
+  minD = new Date(minD.getTime() - 10 * 864e5);
+  maxD = new Date(maxD.getTime() + 20 * 864e5);
+  const span = maxD - minD || 1;
+
+  const LABEL_W = 150, ROW_H = 40, TOP = 40, PX_W = 1000, BAR_H = 22;
+  const x = (d) => LABEL_W + ((d - minD) / span) * PX_W;
+  const H = TOP + phases.length * ROW_H + 12;
+  const W = LABEL_W + PX_W + 30;
+
+  // Month gridlines + labels across the top.
+  let axis = "";
+  let m = new Date(minD.getFullYear(), minD.getMonth(), 1);
+  while (m < maxD) {
+    const mx = x(m);
+    if (mx > LABEL_W) {
+      axis += `<line x1="${mx}" y1="${TOP - 8}" x2="${mx}" y2="${H - 12}" stroke="var(--border)" opacity=".55"/>`;
+      axis += `<text x="${mx + 3}" y="${TOP - 14}" font-size="10" fill="var(--muted)">${m.toLocaleDateString(undefined, { month: "short", year: "2-digit" })}</text>`;
+    }
+    m = new Date(m.getFullYear(), m.getMonth() + 1, 1);
+  }
+
+  // Bars — one row per phase, colored by phase, with a status pill + dates.
+  let bars = "";
+  phases.forEach((p, i) => {
+    const y = TOP + i * ROW_H;
+    const cy = y + ROW_H / 2;
+    const ps = parseISO(p.start), pe = p.open_ended ? maxD : parseISO(p.end);
+    const x1 = x(ps), x2 = Math.max(x(pe), x1 + 6);
+    const color = phaseBarColor(p.name, p.type);
+    const done = p.status === "Completed", active = p.status === "In Progress";
+    if (i % 2 === 0) bars += `<rect x="0" y="${y}" width="${W}" height="${ROW_H}" fill="var(--surface-2)" opacity=".4"/>`;
+    // Left label + status pill
+    bars += `<text x="10" y="${cy - 2}" font-size="12" font-weight="700" fill="var(--text)">${esc(p.name)}</text>`;
+    bars += `<text x="10" y="${cy + 12}" font-size="9.5" fill="var(--text-2)">${counts[p.name]} obj</text>`;
+    // Bar (open-ended fades out toward the right edge)
+    const grad = p.open_ended ? `url(#tlfade${i})` : color;
+    if (p.open_ended) {
+      axis += `<linearGradient id="tlfade${i}" x1="0" x2="1" y1="0" y2="0">
+        <stop offset="0" stop-color="${color}" stop-opacity="0.9"/>
+        <stop offset="1" stop-color="${color}" stop-opacity="0.25"/></linearGradient>`;
+    }
+    bars += `<rect x="${x1}" y="${cy - BAR_H / 2}" width="${x2 - x1}" height="${BAR_H}" rx="5"
+      fill="${grad}" opacity="${done ? 0.55 : 0.92}"
+      ${active ? `stroke="var(--text)" stroke-width="1.5"` : ""}>
+      <title>${esc(p.name)} — ${p.open_ended ? fmtDate(p.start) + " onward" : fmtDate(p.start) + " → " + fmtDate(p.end)} · ${esc(p.status)} · ${counts[p.name]} object${counts[p.name] === 1 ? "" : "s"}</title></rect>`;
+    // In-bar phase name (white) when it fits; date range always sits to the
+    // right of the bar. Narrow bars can't hold the name, so it moves out too.
+    const label = p.open_ended ? `${fmtDate(p.start)} onward` : `${fmtDate(p.start)} – ${fmtDate(p.end)}`;
+    const barW = x2 - x1;
+    const nameFits = barW > p.name.length * 6 + 12;
+    if (nameFits) {
+      bars += `<text x="${x1 + 9}" y="${cy + 4}" font-size="11" font-weight="700" fill="#fff">${esc(p.name)}</text>`;
+      bars += `<text x="${x2 + 8}" y="${cy + 4}" font-size="10.5" font-weight="600" fill="var(--text-2)">${esc(label)}</text>`;
+    } else {
+      bars += `<text x="${x2 + 8}" y="${cy + 4}" font-size="10.5" font-weight="600" fill="var(--text-2)"><tspan font-weight="700" fill="var(--text)">${esc(p.name)}</tspan>  ${esc(label)}</text>`;
+    }
+  });
+
+  // "Now" marker — a vertical line with a top label, if in range.
+  const t0 = today();
+  if (t0 > minD && t0 < maxD) {
+    const nx = x(t0);
+    axis += `<line x1="${nx}" y1="${TOP - 8}" x2="${nx}" y2="${H - 12}" stroke="var(--dl-orange)" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+    axis += `<text x="${nx + 3}" y="${TOP - 26}" font-size="10" font-weight="700" fill="var(--dl-orange)">now</text>`;
+  }
+
+  // Frozen label backdrop on the left.
+  const labelBg = `<rect x="0" y="0" width="${LABEL_W}" height="${H}" fill="var(--surface)"/>
+    <line x1="${LABEL_W}" y1="0" x2="${LABEL_W}" y2="${H}" stroke="var(--border-2)"/>`;
+
+  wrap.innerHTML =
+    `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="display:block">
+      ${axis}
+      <g>${bars}</g>
+      ${labelBg}
+      <g>${phases.map((p, i) => {
+        const cy = TOP + i * ROW_H + ROW_H / 2;
+        return `<text x="10" y="${cy - 2}" font-size="12" font-weight="700" fill="var(--text)">${esc(p.name)}</text>
+                <text x="10" y="${cy + 12}" font-size="9.5" fill="var(--text-2)">${counts[p.name]} obj</text>`;
+      }).join("")}</g>
+    </svg>`;
+
+  // Legend — phase colors + markers.
+  const legend = $("#timelineLegend");
+  if (legend) {
+    const swatches = phases.map(p =>
+      `<span><i class="g-swatch" style="background:${phaseBarColor(p.name, p.type)}"></i>${esc(p.name)}</span>`).join("");
+    legend.innerHTML = swatches +
+      `<span class="gl-sep"></span>` +
+      `<span><i class="g-bar" style="background:#75787B;border:1.5px solid var(--text)"></i> In progress</span>` +
+      `<span><i class="g-bar" style="background:#75787B;opacity:.55"></i> Completed</span>` +
+      `<span class="muted">| Bars span planned phase dates · object counts reflect current filter</span>`;
+  }
 }
 
 /* ============================================================
