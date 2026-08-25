@@ -17,18 +17,21 @@ function statusColor(s) {
   if (k.includes("not started") || k.includes("not-started")) return "#dfe3e9"; // light grey
   return "#c3c9d4";                                                 // fallback grey
 }
-// Canonical display rank for statuses (lower = earlier): green, blues, amber, red, greys.
+// Canonical display rank for statuses (lower = earlier). Fixed program sequence:
+// Not Started, Delayed, F-Spec In Progress, Dev Not Started, Dev In Progress,
+// Blocked, FUT, Completed. Every legend/breakdown/matrix in the app sorts by
+// this so the order is identical everywhere a status shows up.
 function statusRank(s) {
   const k = (s || "").toLowerCase();
-  if (k.includes("complete") || k.includes("done")) return 1;
-  if (k.includes("dev-in") || k.includes("dev in") || (k.includes("in progress") && !k.includes("f-spec") && !k.includes("fspec"))) return 2;
+  if (k.includes("complete") || k.includes("done")) return 8;
+  if (k.includes("dev-in") || k.includes("dev in") || (k.includes("in progress") && !k.includes("f-spec") && !k.includes("fspec"))) return 5;
   if (k.includes("f-spec") || k.includes("fspec") || k.includes("f spec")) return 3;
-  if (k.includes("fut")) return 4;
-  if (/(progress|draft|review|wip)/.test(k)) return 4.5;
-  if (k.includes("delay")) return 5;
+  if (k.includes("fut")) return 7;
+  if (/(progress|draft|review|wip)/.test(k)) return 5.5;
+  if (k.includes("delay")) return 2;
   if (k.includes("block")) return 6;
-  if (k.includes("dev-not") || k.includes("dev not")) return 7;
-  if (k.includes("not started") || k.includes("not-started")) return 8;
+  if (k.includes("dev-not") || k.includes("dev not")) return 4;
+  if (k.includes("not started") || k.includes("not-started")) return 1;
   return 9;
 }
 // Distinct raw Object Status values present, ordered by canonical rank.
@@ -52,6 +55,20 @@ const PHASE_FILL = {
 function phaseFillFor(name, type) {
   return PHASE_FILL[name] || (type === "Gap" ? "rgba(117,120,123,.12)" : "rgba(0,0,0,.03)");
 }
+// Solid phase colors for the Program Timeline bars — per-name (sprints differ by
+// number) with a type-level fallback, so a new phase still gets a sensible color.
+const PHASE_BAR_NAME = {
+  "Sprint 1": "#86BC25", "Sprint 2": "#00A3E0", "Sprint 3": "#6E2585",
+  "SIT 1": "#ED8B00", "SIT 2": "#ED8B00", "UAT": "#9D6BB8",
+  "Cutover": "#DA291C", "Post Go-Live": "#00A3E0",
+};
+const PHASE_BAR_TYPE = {
+  "Sprint": "#00A3E0", "SIT": "#ED8B00", "UAT": "#9D6BB8",
+  "Cutover": "#DA291C", "Milestone": "#00A3E0",
+};
+function phaseBarColor(name, type) {
+  return PHASE_BAR_NAME[name] || PHASE_BAR_TYPE[type] || "#75787B";
+}
 
 const State = {
   data: null,            // full payload
@@ -59,10 +76,20 @@ const State = {
   charts: {},            // donut chart instances by id
   gridApi: null,
   planView: "grid",
+  scheduleView: "plan",   // "plan" (plan-of-record) | "recalc" (recalculated delivery)
+  baselines: [],          // [{id, name, captured_at, count}] — all captured baselines
+  activeBaselineId: null, // which one the grid/Gantt currently compare against
   quick: {},             // transient quick-filters {rice_type, object_status, assigned_sprint}
+  tables: {},             // key -> row-array last rendered by an exportable panel, for the Excel buttons
   choices: {},
   allOptions: { org: [], module: [] },  // full universe of values, for "Select all"
 };
+// Sprint cards, Gantt, and Capacity all read the schedule through these three
+// helpers rather than the raw fields directly, so State.scheduleView is the
+// single switch that moves them between plan-of-record and recalculated dates.
+const schedStart = (r) => State.scheduleView === "recalc" ? r.recalc_start : r.gantt_start;
+const schedDelivery = (r) => State.scheduleView === "recalc" ? r.recalc_delivery : r.gantt_delivery;
+const schedSprint = (r) => State.scheduleView === "recalc" ? r.recalc_sprint : r.assigned_sprint;
 
 /* ---------------- helpers ---------------- */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -94,10 +121,13 @@ document.addEventListener("DOMContentLoaded", () => {
   initTheme();
   initUpload();
   initTopbar();
+  initBaselines();
+  initSchedToggle();
   initFilters();
   initPlanToggle();
   initResourcePlan();
   initModal();
+  initTableExports();
   $("#exportBtn").addEventListener("click", exportCSV);
   $("#reuploadBtn").addEventListener("click", () => {
     $("#uploadScreen").classList.add("show");
@@ -133,6 +163,101 @@ function initTopbar() {
     links.forEach(a => a.classList.remove("active"));
     if (cur) cur.a.classList.add("active");
   }, { passive: true });
+}
+
+/* ============================================================
+   BASELINES — named snapshots of planned/delivery dates. Multiple can
+   exist; the one picked here is compared against current dates in the
+   grid (Baseline Start/Delivery/Slip columns) and Gantt (ghost bars).
+   Persisted server-side in baselines.json, independent of the uploaded
+   workbook, so re-uploading a new file never drops them.
+   ============================================================ */
+function renderBaselineList() {
+  const list = $("#baselineList");
+  if (!State.baselines.length) {
+    list.innerHTML = `<div class="fsaved-empty">No baselines captured yet</div>`;
+  } else {
+    list.innerHTML = State.baselines.map(b => {
+      const d = new Date(b.captured_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" });
+      const on = b.id === State.activeBaselineId;
+      return `<div class="baseline-row ${on ? "on" : ""}">
+        <button type="button" class="baseline-select" data-select="${esc(b.id)}">
+          <span class="fpop-radio ${on ? "on" : ""}">${on ? CHECK_SVG : ""}</span>
+          <span class="baseline-meta"><b>${esc(b.name)}</b><span class="muted">${d} · ${b.count} objects</span></span>
+        </button>
+        <button type="button" class="baseline-rename" data-rename="${esc(b.id)}" title="Rename">✎</button>
+        <button type="button" class="fsaved-del" data-del="${esc(b.id)}" title="Delete">✕</button>
+      </div>`;
+    }).join("");
+  }
+  $$(".baseline-select", list).forEach(b => b.addEventListener("click", () => selectBaseline(b.dataset.select)));
+  $$(".baseline-rename", list).forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); renameBaseline(b.dataset.rename); }));
+  $$(".fsaved-del", list).forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); deleteBaseline(b.dataset.del); }));
+  const active = State.baselines.find(b => b.id === State.activeBaselineId);
+  $("#baselinesPillLabel").textContent = active ? active.name : (State.baselines.length ? "Select baseline" : "Baselines");
+}
+
+async function selectBaseline(id) {
+  togglePopover($("#baselinesWrap"), false);
+  if (id === State.activeBaselineId) return;
+  State.activeBaselineId = id;
+  try { localStorage.setItem("rice-baseline-id", id); } catch {}
+  await loadData();
+}
+
+async function addBaseline() {
+  const name = prompt('Name this baseline (e.g. "Sprint 1 Kickoff"):', "");
+  if (name === null) return; // cancelled
+  try {
+    const r = await fetch("/api/baselines", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) { toast("Error: " + (j.message || "Could not capture baseline.")); return; }
+    toast(`Baseline "${j.baseline.name}" captured for ${j.baseline.count} objects.`);
+    State.activeBaselineId = j.baseline.id;
+    try { localStorage.setItem("rice-baseline-id", j.baseline.id); } catch {}
+    togglePopover($("#baselinesWrap"), false);
+    await loadData();
+  } catch (e) { toast("Network error: " + e.message); }
+}
+
+async function renameBaseline(id) {
+  const b = State.baselines.find(x => x.id === id);
+  const name = prompt("Rename baseline:", b ? b.name : "");
+  if (!name || !name.trim()) return;
+  try {
+    const r = await fetch(`/api/baselines/${encodeURIComponent(id)}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) { toast("Error: " + (j.message || "Could not rename baseline.")); return; }
+    toast("Baseline renamed.");
+    await loadData();
+  } catch (e) { toast("Network error: " + e.message); }
+}
+
+async function deleteBaseline(id) {
+  const b = State.baselines.find(x => x.id === id);
+  if (!confirm(`Delete baseline "${b ? b.name : id}"? This cannot be undone.`)) return;
+  try {
+    await fetch(`/api/baselines/${encodeURIComponent(id)}`, { method: "DELETE" });
+    toast("Baseline deleted.");
+    if (State.activeBaselineId === id) {
+      State.activeBaselineId = null;
+      try { localStorage.removeItem("rice-baseline-id"); } catch {}
+    }
+    await loadData();
+  } catch (e) { toast("Network error: " + e.message); }
+}
+
+function initBaselines() {
+  const wrap = $("#baselinesWrap");
+  $("[data-toggle]", wrap).addEventListener("click", (e) => { e.stopPropagation(); togglePopover(wrap); });
+  $("#addBaselineBtn").addEventListener("click", addBaseline);
+  try { State.activeBaselineId = localStorage.getItem("rice-baseline-id") || null; } catch { State.activeBaselineId = null; }
 }
 
 /* ============================================================
@@ -176,7 +301,8 @@ async function uploadFile(file) {
    ============================================================ */
 async function loadData() {
   try {
-    const r = await fetch("/api/data");
+    const q = State.activeBaselineId ? `?baseline_id=${encodeURIComponent(State.activeBaselineId)}` : "";
+    const r = await fetch("/api/data" + q);
     if (r.status === 404) {
       $("#uploadScreen").classList.add("show");
       $("#dashboard").classList.remove("show");
@@ -186,6 +312,17 @@ async function loadData() {
     if (j.error) { toast("Error: " + j.message); return; }
     State.data = j;
     populateFilterOptions(j);
+    State.baselines = j.baselines || [];
+    State.activeBaselineId = j.active_baseline_id;
+    try {
+      if (State.activeBaselineId) localStorage.setItem("rice-baseline-id", State.activeBaselineId);
+      else localStorage.removeItem("rice-baseline-id");
+    } catch {}
+    renderBaselineList();
+    const replanCount = $("#replanCount");
+    const n = j.summary.needs_replan_count || 0;
+    replanCount.textContent = n;
+    replanCount.classList.toggle("hidden", n === 0);
     $("#footMeta").textContent =
       `Source sheet: ${j.source_sheet} · ${j.record_count} objects · generated ${j.generated_at.replace("T", " ")}`;
     $("#brandSub").textContent = `${j.summary.total_in_scope} in-scope of ${j.record_count} RICE objects`;
@@ -503,7 +640,7 @@ function applyFilters() {
     }
     if (q.rice_type && r.rice_type !== q.rice_type) return false;
     if (q.object_status && r.object_status !== q.object_status) return false;
-    if (q.assigned_sprint && r.assigned_sprint !== q.assigned_sprint) return false;
+    if (q.assigned_sprint && schedSprint(r) !== q.assigned_sprint) return false;
     return true;
   });
   updateResultCount();
@@ -612,6 +749,7 @@ function renderAll(recs) {
   renderTypeCards(recs);
   renderRawStatus(recs);
   renderSprintSummary(recs);
+  renderProgramTimeline(recs);
   renderGrid(recs);
   if (State.planView === "gantt") renderGantt(recs);
   renderCapacity(recs);
@@ -653,7 +791,11 @@ function renderTypeCards(recs) {
     const sc = countByStatus(subset);
     const order = statusOrder(subset).filter(s => sc[s]);
     const total = subset.length;
-    const completed = sc["Completed"] || 0;
+    // % Complete accounts for finished work plus anything in FUT.
+    const completed = Object.entries(sc).reduce((n, [s, c]) => {
+      const k = String(s).toLowerCase();
+      return (k.includes("complete") || k.includes("done") || k.includes("fut")) ? n + c : n;
+    }, 0);
     const pct = total ? Math.round(100 * completed / total) : 0;
     const arc = C * pct / 100;
 
@@ -701,7 +843,8 @@ function countByStatus(recs) {
    RAW OBJECT STATUS
    ============================================================ */
 function renderRawStatus(recs) {
-  const statuses = [...new Set(recs.map(r => r.object_status || "—"))].sort();
+  const statuses = [...new Set(recs.map(r => r.object_status || "—"))]
+    .sort((a, b) => (statusRank(a) - statusRank(b)) || a.localeCompare(b));
   const el = $("#rawStatusCards");
   el.innerHTML = statuses.map(s => {
     const subset = recs.filter(r => (r.object_status || "—") === s);
@@ -726,7 +869,7 @@ function renderSprintSummary(recs) {
   const groups = {};
   phases.forEach(p => groups[p.name] = []);
   groups["Unscheduled"] = [];
-  recs.forEach(r => { if (groups[r.assigned_sprint]) groups[r.assigned_sprint].push(r); });
+  recs.forEach(r => { const s = schedSprint(r); if (groups[s]) groups[s].push(r); });
 
   // Shared color key — the bar segments across every card use statusColor(),
   // so one legend of the statuses actually present explains them all.
@@ -746,7 +889,7 @@ function renderSprintSummary(recs) {
       `<span>${esc(s)}<b> ${sc[s]}</b></span>`).join("") || `<span class="muted">no objects</span>`;
     const dates = p.start ? (p.open_ended ? `${fmtDate(p.start)} onward` : `${fmtDate(p.start)} – ${fmtDate(p.end)}`) : "Not date-assigned";
     return `<div class="sprint-card phase-${esc(p.type)}" data-sprint="${esc(p.name)}">
-      <div class="sprint-head"><h3>${esc(p.name)}</h3><span class="sprint-status">${esc(p.status)}</span></div>
+      <div class="sprint-head"><h3>${esc(p.name)}</h3><span class="sprint-status sprint-status-${slug(p.status)}">${esc(p.status)}</span></div>
       <div class="sprint-dates">${dates}</div>
       <div class="sprint-count">${list.length}</div>
       <div class="sprint-bar">${seg}</div>
@@ -755,6 +898,122 @@ function renderSprintSummary(recs) {
   }).join("");
   $$(".sprint-card", $("#sprintSummary")).forEach(c =>
     c.addEventListener("click", () => setQuick({ assigned_sprint: c.dataset.sprint })));
+}
+
+/* ============================================================
+   PROGRAM TIMELINE — phase-level Gantt (Sprints / SITs / UAT /
+   Cutover / Post Go-Live) so the program schedule reads at a glance.
+   ============================================================ */
+function renderProgramTimeline(recs) {
+  const wrap = $("#timelineScroll");
+  if (!wrap) return;
+  // Real program phases only — Gap tiles are synthetic filler, not milestones.
+  const phases = State.data.timeline.filter(p => p.type !== "Gap");
+  if (!phases.length) { wrap.innerHTML = `<div class="risk-empty">No program timeline configured.</div>`; return; }
+
+  // Object counts per phase (from the current filter), so each bar shows load.
+  const counts = {};
+  phases.forEach(p => counts[p.name] = 0);
+  recs.forEach(r => { const s = schedSprint(r); if (counts[s] != null) counts[s] += 1; });
+
+  // Axis range — anchor the end on the last bounded phase so the far-future
+  // Post Go-Live sentinel doesn't blow up the scale (same trick as the Gantt).
+  const bounded = phases.filter(p => !p.open_ended);
+  let minD = parseISO(phases[0].start);
+  let maxD = parseISO((bounded[bounded.length - 1] || phases[phases.length - 1]).end);
+  minD = new Date(minD.getTime() - 10 * 864e5);
+  maxD = new Date(maxD.getTime() + 20 * 864e5);
+  const span = maxD - minD || 1;
+
+  const LABEL_W = 150, ROW_H = 40, TOP = 40, PX_W = 1000, BAR_H = 22;
+  const x = (d) => LABEL_W + ((d - minD) / span) * PX_W;
+  const H = TOP + phases.length * ROW_H + 12;
+  const W = LABEL_W + PX_W + 30;
+
+  // Month gridlines + labels across the top.
+  let axis = "";
+  let m = new Date(minD.getFullYear(), minD.getMonth(), 1);
+  while (m < maxD) {
+    const mx = x(m);
+    if (mx > LABEL_W) {
+      axis += `<line x1="${mx}" y1="${TOP - 8}" x2="${mx}" y2="${H - 12}" stroke="var(--border)" opacity=".55"/>`;
+      axis += `<text x="${mx + 3}" y="${TOP - 14}" font-size="10" fill="var(--muted)">${m.toLocaleDateString(undefined, { month: "short", year: "2-digit" })}</text>`;
+    }
+    m = new Date(m.getFullYear(), m.getMonth() + 1, 1);
+  }
+
+  // Bars — one row per phase, colored by phase, with a status pill + dates.
+  let bars = "";
+  phases.forEach((p, i) => {
+    const y = TOP + i * ROW_H;
+    const cy = y + ROW_H / 2;
+    const ps = parseISO(p.start), pe = p.open_ended ? maxD : parseISO(p.end);
+    const x1 = x(ps), x2 = Math.max(x(pe), x1 + 6);
+    const color = phaseBarColor(p.name, p.type);
+    const done = p.status === "Completed", active = p.status === "In Progress";
+    if (i % 2 === 0) bars += `<rect x="0" y="${y}" width="${W}" height="${ROW_H}" fill="var(--surface-2)" opacity=".4"/>`;
+    // Left label + status pill
+    bars += `<text x="10" y="${cy - 2}" font-size="12" font-weight="700" fill="var(--text)">${esc(p.name)}</text>`;
+    bars += `<text x="10" y="${cy + 12}" font-size="9.5" fill="var(--text-2)">${counts[p.name]} obj</text>`;
+    // Bar (open-ended fades out toward the right edge)
+    const grad = p.open_ended ? `url(#tlfade${i})` : color;
+    if (p.open_ended) {
+      axis += `<linearGradient id="tlfade${i}" x1="0" x2="1" y1="0" y2="0">
+        <stop offset="0" stop-color="${color}" stop-opacity="0.9"/>
+        <stop offset="1" stop-color="${color}" stop-opacity="0.25"/></linearGradient>`;
+    }
+    bars += `<rect x="${x1}" y="${cy - BAR_H / 2}" width="${x2 - x1}" height="${BAR_H}" rx="5"
+      fill="${grad}" opacity="${done ? 0.55 : 0.92}"
+      ${active ? `stroke="var(--text)" stroke-width="1.5"` : ""}>
+      <title>${esc(p.name)} — ${p.open_ended ? fmtDate(p.start) + " onward" : fmtDate(p.start) + " → " + fmtDate(p.end)} · ${esc(p.status)} · ${counts[p.name]} object${counts[p.name] === 1 ? "" : "s"}</title></rect>`;
+    // In-bar phase name (white) when it fits; date range always sits to the
+    // right of the bar. Narrow bars can't hold the name, so it moves out too.
+    const label = p.open_ended ? `${fmtDate(p.start)} onward` : `${fmtDate(p.start)} – ${fmtDate(p.end)}`;
+    const barW = x2 - x1;
+    const nameFits = barW > p.name.length * 6 + 12;
+    if (nameFits) {
+      bars += `<text x="${x1 + 9}" y="${cy + 4}" font-size="11" font-weight="700" fill="#fff">${esc(p.name)}</text>`;
+      bars += `<text x="${x2 + 8}" y="${cy + 4}" font-size="10.5" font-weight="600" fill="var(--text-2)">${esc(label)}</text>`;
+    } else {
+      bars += `<text x="${x2 + 8}" y="${cy + 4}" font-size="10.5" font-weight="600" fill="var(--text-2)"><tspan font-weight="700" fill="var(--text)">${esc(p.name)}</tspan>  ${esc(label)}</text>`;
+    }
+  });
+
+  // "Now" marker — a vertical line with a top label, if in range.
+  const t0 = today();
+  if (t0 > minD && t0 < maxD) {
+    const nx = x(t0);
+    axis += `<line x1="${nx}" y1="${TOP - 8}" x2="${nx}" y2="${H - 12}" stroke="var(--dl-orange)" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+    axis += `<text x="${nx + 3}" y="${TOP - 26}" font-size="10" font-weight="700" fill="var(--dl-orange)">now</text>`;
+  }
+
+  // Frozen label backdrop on the left.
+  const labelBg = `<rect x="0" y="0" width="${LABEL_W}" height="${H}" fill="var(--surface)"/>
+    <line x1="${LABEL_W}" y1="0" x2="${LABEL_W}" y2="${H}" stroke="var(--border-2)"/>`;
+
+  wrap.innerHTML =
+    `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="display:block">
+      ${axis}
+      <g>${bars}</g>
+      ${labelBg}
+      <g>${phases.map((p, i) => {
+        const cy = TOP + i * ROW_H + ROW_H / 2;
+        return `<text x="10" y="${cy - 2}" font-size="12" font-weight="700" fill="var(--text)">${esc(p.name)}</text>
+                <text x="10" y="${cy + 12}" font-size="9.5" fill="var(--text-2)">${counts[p.name]} obj</text>`;
+      }).join("")}</g>
+    </svg>`;
+
+  // Legend — phase colors + markers.
+  const legend = $("#timelineLegend");
+  if (legend) {
+    const swatches = phases.map(p =>
+      `<span><i class="g-swatch" style="background:${phaseBarColor(p.name, p.type)}"></i>${esc(p.name)}</span>`).join("");
+    legend.innerHTML = swatches +
+      `<span class="gl-sep"></span>` +
+      `<span><i class="g-bar" style="background:#75787B;border:1.5px solid var(--text)"></i> In progress</span>` +
+      `<span><i class="g-bar" style="background:#75787B;opacity:.55"></i> Completed</span>` +
+      `<span class="muted">| Bars span planned phase dates · object counts reflect current filter</span>`;
+  }
 }
 
 /* ============================================================
@@ -797,7 +1056,23 @@ function gridColumns() {
     { headerName: "Spec Plan", field: "spec_effective", width: 110, valueFormatter: p => fmtDate(p.value) },
     { headerName: "Spec Actual", field: "spec_actual", width: 110, valueFormatter: p => fmtDate(p.value) },
     { headerName: "Delivery", field: "delivery_date", width: 110, valueFormatter: p => fmtDate(p.value) },
+    { headerName: "Baseline Start", field: "baseline_gantt_start", width: 130, valueFormatter: p => fmtDate(p.value) },
+    { headerName: "Baseline Delivery", field: "baseline_gantt_delivery", width: 140, valueFormatter: p => fmtDate(p.value) },
+    {
+      headerName: "Slip (days)", field: "slip_days", width: 120, type: "numericColumn",
+      valueFormatter: p => p.value == null ? "—" : (p.value > 0 ? "+" : "") + p.value,
+      cellClass: p => p.value == null ? "" : p.value > 0 ? "cell-slip-late" : p.value < 0 ? "cell-slip-early" : "cell-slip-flat",
+      tooltipValueGetter: p => p.value == null ? "" :
+        (p.data.delivered ? "Actual delivery vs baseline" : "Current forecast vs baseline — not yet delivered"),
+    },
     { headerName: "Assigned Sprint", field: "assigned_sprint", width: 140 },
+    {
+      headerName: "Needs Replan", field: "needs_replan", width: 130,
+      cellRenderer: p => p.value ? `<span class="replan-badge">⚠ Replan</span>` : `<span class="muted">—</span>`,
+    },
+    { headerName: "Recalc Start", field: "recalc_start", width: 120, valueFormatter: p => fmtDate(p.value) },
+    { headerName: "Recalc Delivery", field: "recalc_delivery", width: 130, valueFormatter: p => fmtDate(p.value) },
+    { headerName: "Recalc Sprint", field: "recalc_sprint", width: 140 },
     { headerName: "Source", field: "source_system", width: 150 },
     { headerName: "Target", field: "target_system", width: 150 },
   ];
@@ -848,6 +1123,16 @@ function renderGrid(recs) {
   }
 }
 
+function initSchedToggle() {
+  $$("#schedToggle button").forEach(b => b.addEventListener("click", () => {
+    if (State.scheduleView === b.dataset.view) return;
+    $$("#schedToggle button").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    State.scheduleView = b.dataset.view;
+    applyFilters();
+  }));
+}
+
 function initPlanToggle() {
   $$("#planToggle button").forEach(b => b.addEventListener("click", () => {
     $$("#planToggle button").forEach(x => x.classList.remove("active"));
@@ -866,7 +1151,7 @@ function initPlanToggle() {
    GANTT  (signature visual)
    ============================================================ */
 function renderGantt(recs) {
-  const rows = recs.filter(r => r.gantt_start && r.gantt_delivery)
+  const rows = recs.filter(r => schedStart(r) && schedDelivery(r))
     .sort((a, b) => {
       const ta = TYPE_ORDER.indexOf(a.rice_type), tb = TYPE_ORDER.indexOf(b.rice_type);
       const ra = ta === -1 ? TYPE_ORDER.length : ta, rb = tb === -1 ? TYPE_ORDER.length : tb;
@@ -875,6 +1160,7 @@ function renderGantt(recs) {
       return (a.rice_id || "").localeCompare(b.rice_id || "", undefined, { numeric: true });
     });
   const wrap = $("#ganttScroll");
+  const activeBaseline = State.baselines.find(b => b.id === State.activeBaselineId);
 
   // Legend — build bars are colored by RICE type, so key the types actually
   // present (in canonical order), then the shared markers. Kept in sync with
@@ -892,7 +1178,9 @@ function renderGantt(recs) {
       `<span><i class="g-diamond"></i> Spec complete</span>` +
       `<span><i class="g-dot"></i> Delivery</span>` +
       `<span><i class="g-bar g-est"></i> Estimated (faded)</span>` +
-      `<span class="muted">| Phase shading behind timeline · current week highlighted</span>`;
+      `<span><i class="g-bar g-replan"></i> Needs replan (spec now lands after dev start)</span>` +
+      (activeBaseline ? `<span><i class="g-bar g-baseline"></i> Baseline: ${esc(activeBaseline.name)} (${fmtDate(activeBaseline.captured_at.slice(0, 10))})</span>` : "") +
+      `<span class="muted">| Showing ${State.scheduleView === "recalc" ? "<b>recalculated</b> delivery" : "<b>plan-of-record</b> delivery"} · Phase shading behind timeline · current week highlighted</span>`;
   }
 
   if (!rows.length) { wrap.innerHTML = `<div class="risk-empty">No objects with scheduling dates in the current filter.</div>`; return; }
@@ -904,8 +1192,9 @@ function renderGantt(recs) {
   const boundedTl = tl.filter(p => !p.open_ended);
   let minD = parseISO(tl[0].start), maxD = parseISO((boundedTl[boundedTl.length - 1] || tl[tl.length - 1]).end);
   rows.forEach(r => {
-    const s = parseISO(r.gantt_start), d = parseISO(r.gantt_delivery), sp = parseISO(r.gantt_spec);
-    [s, d, sp].forEach(x => { if (x && x < minD) minD = x; if (x && x > maxD) maxD = x; });
+    const s = parseISO(schedStart(r)), d = parseISO(schedDelivery(r)), sp = parseISO(r.gantt_spec);
+    const bs = parseISO(r.baseline_gantt_start), bd = parseISO(r.baseline_gantt_delivery);
+    [s, d, sp, bs, bd].forEach(x => { if (x && x < minD) minD = x; if (x && x > maxD) maxD = x; });
   });
   // pad a week each side
   minD = new Date(minD.getTime() - 6 * 864e5); maxD = new Date(maxD.getTime() + 6 * 864e5);
@@ -962,23 +1251,34 @@ function renderGantt(recs) {
   let bars = "";
   rows.forEach((r, i) => {
     const y = TOP + i * ROW_H, cy = y + ROW_H / 2;
-    const xs = x(parseISO(r.gantt_start)), xd = x(parseISO(r.gantt_delivery));
+    const start = schedStart(r), delivery = schedDelivery(r);
+    const xs = x(parseISO(start)), xd = x(parseISO(delivery));
     const barColor = TYPE_COLOR[r.rice_type] || "#00A3E0";
     if (i % 2 === 0) bars += `<rect x="${LABEL_W}" y="${y}" width="${PX_W + 20}" height="${ROW_H}" fill="var(--surface-2)" opacity=".5"/>`;
     // label
     const nm = (r.object_name || "").length > 30 ? r.object_name.slice(0, 29) + "…" : r.object_name;
     bars += `<text x="8" y="${cy - 3}" font-size="10.5" font-weight="700" fill="var(--text)">${esc(r.rice_id)}</text>`;
     bars += `<text x="8" y="${cy + 9}" font-size="9.5" fill="var(--text-2)">${esc(nm)}</text>`;
-    // build bar
-    bars += `<rect x="${xs}" y="${cy - 4}" width="${Math.max(xd - xs, 2)}" height="8" rx="3" fill="${barColor}" opacity="${r.gantt_delivery_estimated ? .5 : .9}">
-      <title>${esc(r.rice_id)} — build ${fmtDate(r.gantt_start)} → ${fmtDate(r.gantt_delivery)}${r.gantt_delivery_estimated ? " (est)" : ""}</title></rect>`;
+    // baseline ghost bar — drawn above the current bar so both are visible at once
+    if (r.baseline_gantt_start && r.baseline_gantt_delivery) {
+      const bxs = x(parseISO(r.baseline_gantt_start)), bxd = x(parseISO(r.baseline_gantt_delivery));
+      const slipLabel = r.slip_days == null ? "" :
+        ` (${r.delivered ? "actual" : "forecast"} ${r.slip_days > 0 ? "+" : ""}${r.slip_days}d vs ${activeBaseline ? esc(activeBaseline.name) : "baseline"})`;
+      bars += `<rect x="${bxs}" y="${cy - 9}" width="${Math.max(bxd - bxs, 2)}" height="4" rx="2" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="3 2" opacity=".85">
+        <title>${esc(r.rice_id)} — baseline ${fmtDate(r.baseline_gantt_start)} → ${fmtDate(r.baseline_gantt_delivery)}${slipLabel}</title></rect>`;
+    }
+    // build bar — a dashed amber outline flags objects whose revised spec date
+    // now lands after planned dev start (needs_replan), in either schedule view
+    const replanStroke = r.needs_replan ? `stroke="var(--dl-orange)" stroke-width="1.5" stroke-dasharray="3 2"` : "";
+    bars += `<rect x="${xs}" y="${cy - 4}" width="${Math.max(xd - xs, 2)}" height="8" rx="3" fill="${barColor}" opacity="${r.gantt_delivery_estimated ? .5 : .9}" ${replanStroke}>
+      <title>${esc(r.rice_id)} — build ${fmtDate(start)} → ${fmtDate(delivery)}${r.gantt_delivery_estimated ? " (est)" : ""}${r.needs_replan ? "\nNeeds replan — spec now lands after planned dev start" : ""}</title></rect>`;
     // spec diamond
     if (r.gantt_spec) {
       const sx = x(parseISO(r.gantt_spec));
       bars += `<rect x="${sx - 5}" y="${cy - 5}" width="10" height="10" transform="rotate(45 ${sx} ${cy})" fill="var(--text)" stroke="var(--surface)" stroke-width="1"><title>Spec complete ${fmtDate(r.gantt_spec)}</title></rect>`;
     }
     // delivery dot
-    bars += `<circle cx="${xd}" cy="${cy}" r="5" fill="#ED8B00" stroke="var(--surface)" stroke-width="1.5"><title>Delivery ${fmtDate(r.gantt_delivery)}</title></circle>`;
+    bars += `<circle cx="${xd}" cy="${cy}" r="5" fill="#ED8B00" stroke="var(--surface)" stroke-width="1.5"><title>Delivery ${fmtDate(delivery)}</title></circle>`;
   });
   // frozen label backdrop
   const labelBg = `<rect x="0" y="0" width="${LABEL_W}" height="${H}" fill="var(--surface)"/>
@@ -992,8 +1292,11 @@ function renderGantt(recs) {
       <g>${rows.map((r, i) => {
         const cy = TOP + i * ROW_H + ROW_H / 2;
         const nm = (r.object_name || "").length > 30 ? r.object_name.slice(0, 29) + "…" : r.object_name;
+        const warn = r.needs_replan
+          ? `<text x="${LABEL_W - 16}" y="${cy + 4}" font-size="11" fill="var(--dl-orange)">⚠<title>Needs replan — spec now lands after planned dev start</title></text>`
+          : "";
         return `<text x="8" y="${cy - 3}" font-size="10.5" font-weight="700" fill="var(--text)">${esc(r.rice_id)}</text>
-                <text x="8" y="${cy + 9}" font-size="9.5" fill="var(--text-2)">${esc(nm)}</text>`;
+                <text x="8" y="${cy + 9}" font-size="9.5" fill="var(--text-2)">${esc(nm)}</text>${warn}`;
       }).join("")}</g>
     </svg>`;
 }
@@ -1026,8 +1329,9 @@ function renderCapacity(recs) {
   };
 
   recs.forEach(r => {
-    if (!r.build_hours || !r.gantt_start || !r.gantt_delivery) return;
-    const s = parseISO(r.gantt_start), d = parseISO(r.gantt_delivery);
+    const start = schedStart(r), delivery = schedDelivery(r);
+    if (!r.build_hours || !start || !delivery) return;
+    const s = parseISO(start), d = parseISO(delivery);
     if (s < minD) minD = s; if (d > maxD) maxD = d;
     const weeks = [];
     let w = new Date(s); w.setDate(w.getDate() - ((w.getDay() + 6) % 7));
@@ -1093,6 +1397,23 @@ function renderCapacity(recs) {
          <tbody>${rowsTypes.map(typeRow).join("")}${totalRow()}</tbody></table>
      </div>`;
 
+  const exportRows = rowsTypes.map(type => {
+    const row = { "RICE Type": type };
+    cols.forEach(c => {
+      const cell = (data[c] && data[c][type]) || { hours: 0 };
+      row[fmtDate(c)] = Math.ceil(cell.hours / HPW) || 0;
+    });
+    return row;
+  });
+  const totalRowObj = { "RICE Type": "All Types" };
+  cols.forEach(c => {
+    let hrs = 0;
+    Object.values(data[c] || {}).forEach(o => { hrs += o.hours; });
+    totalRowObj[fmtDate(c)] = Math.ceil(hrs / HPW) || 0;
+  });
+  exportRows.push(totalRowObj);
+  State.tables.capacity = exportRows;
+
   $$(".heat-cell", $("#capacityHeat")).forEach(td => td.addEventListener("click", () => {
     const wk = td.dataset.wk, type = td.dataset.type;
     const cell = type ? (data[wk] && data[wk][type]) : null;
@@ -1110,6 +1431,8 @@ function renderCapacity(recs) {
 function renderRisk(recs) {
   const lean = recs.filter(r => r.lean_spec_risk);
   const build = recs.filter(r => r.build_risk);
+  $("#leanRiskCount").textContent = lean.length;
+  $("#buildRiskCount").textContent = build.length;
   $("#leanRisk").innerHTML = riskItems(lean, "spec");
   $("#buildRisk").innerHTML = riskItems(build, "build");
   $$("#leanRisk .risk-item, #buildRisk .risk-item").forEach(el =>
@@ -1117,6 +1440,18 @@ function renderRisk(recs) {
       const r = recs.find(x => x.rice_id === el.dataset.id);
       if (r) openModal(r.rice_id + " — " + r.object_name, [r], true);
     }));
+  State.tables.leanRisk = riskExportRows(lean, "spec");
+  State.tables.buildRisk = riskExportRows(build, "build");
+}
+function riskExportRows(list, kind) {
+  return list.map(r => ({
+    "RICE ID": r.rice_id, "Object Name": r.object_name, "Type": r.rice_type,
+    "Object Status": r.object_status || "",
+    [kind === "spec" ? "Spec Date" : "Delivery Date"]: (kind === "spec" ? r.spec_effective : r.delivery_date) || "",
+    [kind === "spec" ? "F-Spec Status" : "Dev Status"]: (kind === "spec" ? r.fspec_status : r.dev_status) || "",
+    [kind === "spec" ? "Spec %" : "Dev %"]: (kind === "spec" ? r.spec_pct : r.dev_pct) ?? "",
+    "Owner": r.functional_owner || r.technical_owner || "",
+  }));
 }
 function riskItems(list, kind) {
   if (!list.length) return `<div class="risk-empty">No objects flagged. ✓</div>`;
@@ -1136,6 +1471,7 @@ function riskItems(list, kind) {
         <span class="ri-id">${esc(r.rice_id)}</span>
         <span>${esc(r.rice_type)}</span>
         <span>${kind === "spec" ? "Spec" : "Delivery"}: ${fmtDate(date)}</span>
+        <span>Dev Start (Plan): ${fmtDate(r.dev_start_planned)}</span>
         <span>${esc(stat)}${pct != null ? " · " + Math.round(pct) + "%" : ""}</span>
         <span>${esc(r.functional_owner || r.technical_owner || "—")}</span>
       </div></div>`;
@@ -1177,11 +1513,26 @@ function renderSpecDeadlines(recs) {
   $("#specDueWeek").innerHTML = specTable(due, t, "due");
   $("#specDelayedCount").textContent = delayed.length;
   $("#specDueCount").textContent = due.length;
+  State.tables.specDelayed = delayed.map(r => specExportRow(r, t, "delayed"));
+  State.tables.specDue = due.map(r => specExportRow(r, t, "due"));
   $$("#specDelayed .sd-row, #specDueWeek .sd-row").forEach(el =>
     el.addEventListener("click", () => {
       const r = recs.find(x => x.rice_id === el.dataset.id);
       if (r) openModal(r.rice_id + " — " + r.object_name, [r], true);
     }));
+}
+
+function specExportRow(r, t, kind) {
+  const dateISO = specDueDate(r);
+  const days = Math.round((parseISO(dateISO) - t) / 86400000);
+  const row = {
+    "RICE ID": r.rice_id, "Object Name": r.object_name, "Type": r.rice_type, "Module": r.module || "",
+    "Spec Date": dateISO || "", "Source": r.spec_revised ? "Revised" : "Planned",
+  };
+  row[kind === "delayed" ? "Days Overdue" : "Days Until Due"] = kind === "delayed" ? Math.abs(days) : days;
+  row["Owner"] = r.functional_owner || "";
+  row["F-Spec Status"] = r.fspec_status || "";
+  return row;
 }
 
 function specTable(list, t, kind) {
@@ -1244,6 +1595,8 @@ function renderOwnerFocus(recs) {
 
   const el = $("#ownerFocus");
   if (!matches.length) {
+    $("#ownerFocusCount").textContent = 0;
+    State.tables.ownerFocus = [];
     el.innerHTML = `<div class="risk-empty">No delayed or lean-spec-due-this-week objects in the current filter. ✓</div>`;
     return;
   }
@@ -1254,10 +1607,16 @@ function renderOwnerFocus(recs) {
     (groups[owner] = groups[owner] || []).push(m);
   });
   const owners = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+  $("#ownerFocusCount").textContent = owners.length;
 
+  const exportRows = [];
   el.innerHTML = owners.map(owner => {
     const items = groups[owner].sort((a, b) =>
       (parseISO(leanSpecDate(a.r)) || new Date(8640e12)) - (parseISO(leanSpecDate(b.r)) || new Date(8640e12)));
+    items.forEach(({ r, reasons }) => exportRows.push({
+      "Owner": owner, "RICE ID": r.rice_id, "Object Name": r.object_name, "Type": r.rice_type,
+      "Reasons": reasons.join(", "), "Object Status": r.object_status || "", "Spec Date": leanSpecDate(r) || "",
+    }));
     const delayedN = items.filter(i => i.reasons.includes("Delayed")).length;
     const dueN = items.filter(i => i.reasons.includes("Spec due this week")).length;
     return `<div class="owner-card">
@@ -1289,6 +1648,7 @@ function renderOwnerFocus(recs) {
       </div>
     </div>`;
   }).join("");
+  State.tables.ownerFocus = exportRows;
 
   $$("#ownerFocus .risk-item").forEach(item => item.addEventListener("click", () => {
     const r = recs.find(x => x.rice_id === item.dataset.id);
@@ -1302,7 +1662,7 @@ function renderOwnerFocus(recs) {
 function renderMatrix(recs) {
   const types = TYPE_ORDER.filter(t => recs.some(r => r.rice_type === t))
     .concat([...new Set(recs.map(r => r.rice_type))].filter(t => !TYPE_ORDER.includes(t)));
-  const rawStatuses = [...new Set(recs.map(r => r.object_status).filter(Boolean))].sort();
+  const rawStatuses = statusOrder(recs);
   buildMatrix($("#matrixRaw"), recs, types, rawStatuses, "object_status");
 }
 function buildMatrix(container, recs, rows, cols, field) {
@@ -1323,6 +1683,19 @@ function buildMatrix(container, recs, rows, cols, field) {
   const totals = cols.map(c => recs.filter(r => r[field] === c).length);
   body += `<tr class="total-row"><td class="lbl">Total</td>${totals.map(n => `<td>${n}</td>`).join("")}<td class="total-col">${recs.length}</td></tr>`;
   container.innerHTML = `<table class="matrix"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+
+  const exportRows = rows.map(t => {
+    const row = { "RICE Type": t };
+    let rowTotal = 0;
+    cols.forEach(c => { const n = count(t, c); row[c] = n; rowTotal += n; });
+    row["Total"] = rowTotal;
+    return row;
+  });
+  const totalsRow = { "RICE Type": "Total" };
+  cols.forEach((c, i) => { totalsRow[c] = totals[i]; });
+  totalsRow["Total"] = recs.length;
+  exportRows.push(totalsRow);
+  State.tables.matrix = exportRows;
   $$(".cell", container).forEach(td => td.addEventListener("click", () => {
     const q = { rice_type: td.dataset.type };
     q[td.dataset.field] = td.dataset.col;
@@ -1400,7 +1773,7 @@ function closeModal() { $("#modal").classList.add("hidden"); }
    RESOURCE PLAN — fixed scope (Deloitte · In Scope · ≠ARCS · no
    Conversions), independent of the dashboard filters above.
    ============================================================ */
-const RP_SCENARIOS = ["aggressive", "optimized", "conservative", "two_wave"];
+const RP_SCENARIOS = ["aggressive", "optimized", "conservative", "two_wave", "replan_recovery"];
 State.rp = { plan: null, scenario: "optimized" };
 
 function initResourcePlan() {
@@ -1437,7 +1810,8 @@ function renderResourcePlan() {
   const scope = plan.scope;
   $("#rpScopeNote").textContent =
     `— ${scope.description} · ${scope.open} open of ${scope.objects} objects · ${fmtNum(scope.planned_hours)} hrs remaining` +
-    (scope.estimated_objects ? ` · ${scope.estimated_objects} with estimated hours` : "");
+    (scope.estimated_objects ? ` · ${scope.estimated_objects} with estimated hours` : "") +
+    (plan.replan_objects.length ? ` · ${plan.replan_objects.length} need replanning (see Replan Recovery)` : "");
 
   $("#rpScenarioSeg").innerHTML = RP_SCENARIOS.map(key =>
     `<button data-sc="${key}" class="${key === State.rp.scenario ? "active" : ""}">${plan.scenarios[key].label}</button>`).join("");
@@ -1563,9 +1937,9 @@ function renderRpTimeline(plan, sc) {
   const rows = sc.resources.map(r => {
     const bars = r.assignments.map(a => {
       const l = pct(a.start), w = Math.max(pct(a.end) - l, 0.5);
-      return `<div class="rp-bar ${a.late ? "late" : ""}" data-id="${esc(a.rice_id)}"
+      return `<div class="rp-bar ${a.late ? "late" : ""} ${a.needs_replan ? "replan" : ""}" data-id="${esc(a.rice_id)}"
         style="left:${l.toFixed(2)}%;width:${w.toFixed(2)}%;background:${TYPE_COLOR[a.rice_type] || "#75787B"}"
-        title="${esc(a.rice_id)} · ${esc(a.object_name)} · ${esc(a.complexity)} · ${a.hours}h${a.estimated ? " (estimated)" : ""} · ${fmtDate(a.start)} → ${fmtDate(a.end)}${a.late ? " · misses " + fmtDate(a.deadline) + " deadline" : ""}">${esc(a.rice_id)}</div>`;
+        title="${esc(a.rice_id)} · ${esc(a.object_name)} · ${esc(a.complexity)} · ${a.hours}h${a.estimated ? " (estimated)" : ""} · ${fmtDate(a.start)} → ${fmtDate(a.end)}${a.late ? " · misses " + fmtDate(a.deadline) + " deadline" : ""}${a.needs_replan ? " · needs replan — spec slipped past dev start" : ""}">${esc(a.rice_id)}</div>`;
     }).join("");
     return `<div class="rp-row">
       <div class="rp-lbl"><b><i class="rp-lbl-dot" style="background:${TYPE_COLOR[r.rice_type] || "#75787B"}"></i>${esc(r.name)}</b><span>${fmtDate(r.onboard)} → ${fmtDate(r.rolloff)} · ${r.utilization}%</span></div>
@@ -1575,7 +1949,8 @@ function renderRpTimeline(plan, sc) {
 
   const legend = ["Integration", "Extension", "Report"]
     .map(ty => `<span><i style="background:${TYPE_COLOR[ty]}"></i> ${ty}</span>`).join("") +
-    `<span><i class="late-demo"></i> misses deadline</span>`;
+    `<span><i class="late-demo"></i> misses deadline</span>` +
+    `<span><i class="replan-demo"></i> needs replan</span>`;
   $("#rpTimeline").innerHTML =
     `<div class="rp-tl-legend">${legend}</div>
      <div class="rp-tl">
@@ -1593,7 +1968,7 @@ function renderRpMisses(sc) {
   $("#rpMisses").innerHTML =
     `<h3 class="sub-title">Objects missing their deadline <span class="muted">— ${sc.misses.length} objects · schedule more onboards or move them to a later wave</span></h3>
      <div class="rp-miss-list">` + sc.misses.map(m =>
-      `<div class="rp-miss"><b>${esc(m.rice_id)}</b> ${esc(m.object_name)}
+      `<div class="rp-miss ${m.needs_replan ? "replan" : ""}"><b>${esc(m.rice_id)}</b> ${esc(m.object_name)}${m.needs_replan ? ` <span class="replan-badge">⚠ Replan</span>` : ""}
         <span class="muted">${esc(m.rice_type)} · ${m.hours}h · lands ${fmtDate(m.finish)} vs deadline ${fmtDate(m.deadline)}</span></div>`
     ).join("") + `</div>`;
 }
@@ -1618,4 +1993,34 @@ function exportCSV() {
   a.download = "rice_tracker_filtered.csv";
   a.click(); URL.revokeObjectURL(a.href);
   toast(`Exported ${recs.length} rows.`);
+}
+
+/* ============================================================
+   XLSX EXPORT — per-panel "Export to Excel" buttons. Each render function
+   below stashes the row-array it just built onto State.tables.<key>, so a
+   button click always exports exactly what's currently on screen (same
+   filtered/computed data, no re-derivation).
+   ============================================================ */
+function exportXLSX(filename, sheetName, rows) {
+  if (!rows || !rows.length) { toast("Nothing to export — no rows in this panel."); return; }
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31)); // Excel sheet-name length limit
+  XLSX.writeFile(wb, filename);
+  toast(`Exported ${rows.length} rows to ${filename}`);
+}
+
+function initTableExports() {
+  [
+    ["exportSpecDelayed", "specDelayed", "rice_spec_deadlines_delayed.xlsx", "Delayed"],
+    ["exportSpecDue", "specDue", "rice_spec_deadlines_due_this_week.xlsx", "Due This Week"],
+    ["exportLeanRisk", "leanRisk", "rice_lean_spec_risk.xlsx", "Lean Spec Risk"],
+    ["exportBuildRisk", "buildRisk", "rice_build_risk.xlsx", "Build Risk"],
+    ["exportOwnerFocus", "ownerFocus", "rice_owner_focus.xlsx", "Owner Focus"],
+    ["exportMatrix", "matrix", "rice_delivery_matrix.xlsx", "Matrix"],
+    ["exportCapacity", "capacity", "rice_resource_capacity.xlsx", "Capacity"],
+  ].forEach(([btnId, key, filename, sheet]) => {
+    const btn = $("#" + btnId);
+    if (btn) btn.addEventListener("click", () => exportXLSX(filename, sheet, State.tables[key]));
+  });
 }

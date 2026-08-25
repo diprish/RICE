@@ -13,6 +13,7 @@ import io
 import re
 import json
 import math
+import uuid
 import datetime as dt
 
 import numpy as np
@@ -26,28 +27,42 @@ BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 DATA_FILE = os.path.join(BASE_DIR, "rice_tracker_data.xlsx")
 SAVED_FILTERS_FILE = os.path.join(BASE_DIR, "saved_filters.json")
+BASELINES_FILE = os.path.join(BASE_DIR, "baselines.json")
+# Pre-multi-baseline storage format (single, overwritable baseline). Read once
+# to migrate an already-captured baseline into the new format the first time
+# baselines.json doesn't exist yet, so upgrading the app doesn't lose it.
+LEGACY_BASELINE_FILE = os.path.join(BASE_DIR, "baseline.json")
+# Per-item fields snapshotted into a baseline, for delay/slip comparison later.
+BASELINE_FIELDS = ("spec_planned", "dev_start_planned", "build_planned", "fut_planned",
+                   "gantt_start", "gantt_delivery")
 SHEET_CANDIDATES = ["1.4.2 - Overall Rice Tracker_rb"]  # preferred sheet names
 ALLOWED_EXT = {".xlsx", ".xlsm", ".xls"}
 HOURS_PER_DEV_WEEK = 45.0
+# Handoff buffer between spec-complete and dev-start used when recalculating
+# delivery for objects whose revised spec date now lands after planned dev start.
+SPEC_TO_DEV_BUFFER_DAYS = 2
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload cap
 
-# Program timeline (fixed configuration from the program plan).
+# Program timeline (fixed configuration from the program plan). "status" is
+# not stored here — it's derived from today's date vs start/end on every
+# request (see _phase_status), so it never drifts out of sync like a
+# hand-maintained field would.
 PROGRAM_TIMELINE = [
-    {"name": "Sprint 1", "type": "Sprint", "status": "Completed", "start": "2026-03-23", "end": "2026-05-01"},
-    {"name": "Sprint 2", "type": "Sprint", "status": "In Progress", "start": "2026-06-22", "end": "2026-07-17"},
-    {"name": "Sprint 3", "type": "Sprint", "status": "Planned", "start": "2026-07-27", "end": "2026-08-21"},
-    {"name": "SIT 1", "type": "SIT", "status": "Planned", "start": "2026-09-28", "end": "2026-10-30"},
-    {"name": "SIT 2", "type": "SIT", "status": "Planned", "start": "2026-11-09", "end": "2026-12-11"},
-    {"name": "UAT", "type": "UAT", "status": "Planned", "start": "2026-12-14", "end": "2027-01-15"},
-    {"name": "Cutover", "type": "Cutover", "status": "Planned", "start": "2027-01-18", "end": "2027-02-07"},
+    {"name": "Sprint 1", "type": "Sprint", "start": "2026-03-23", "end": "2026-05-01"},
+    {"name": "Sprint 2", "type": "Sprint", "start": "2026-06-22", "end": "2026-07-17"},
+    {"name": "Sprint 3", "type": "Sprint", "start": "2026-07-27", "end": "2026-08-21"},
+    {"name": "SIT 1", "type": "SIT", "start": "2026-09-28", "end": "2026-10-30"},
+    {"name": "SIT 2", "type": "SIT", "start": "2026-11-09", "end": "2026-12-11"},
+    {"name": "UAT", "type": "UAT", "start": "2026-12-14", "end": "2027-01-15"},
+    {"name": "Cutover", "type": "Cutover", "start": "2027-01-18", "end": "2027-02-07"},
     # Open-ended catch-all: anything delivered after Cutover lands here rather
     # than falling through to Unscheduled. "end" is a far-future sentinel, not
     # a real program date — open_ended tells the UI to render/scale it as "onward".
-    {"name": "Post Go-Live", "type": "Milestone", "status": "Planned", "start": "2027-02-08", "end": "2099-12-31", "open_ended": True},
+    {"name": "Post Go-Live", "type": "Milestone", "start": "2027-02-08", "end": "2099-12-31", "open_ended": True},
 ]
 
 
@@ -67,7 +82,6 @@ def _with_gaps(program_timeline):
             expanded.append({
                 "name": f"Gap b/w {phase['name']} and {nxt['name']}",
                 "type": "Gap",
-                "status": "—",
                 "start": gap_start.strftime("%Y-%m-%d"),
                 "end": gap_end.strftime("%Y-%m-%d"),
             })
@@ -75,6 +89,22 @@ def _with_gaps(program_timeline):
 
 
 PROGRAM_TIMELINE_EXPANDED = _with_gaps(PROGRAM_TIMELINE)
+
+
+def _phase_status(phase, today):
+    """Completed / In Progress / Planned, derived from today vs the phase's
+    start/end — Gap tiles aren't real phases so they stay a placeholder."""
+    if phase["type"] == "Gap":
+        return "—"
+    start = pd.Timestamp(phase["start"])
+    if phase.get("open_ended"):
+        return "In Progress" if today >= start else "Planned"
+    end = pd.Timestamp(phase["end"])
+    if today > end:
+        return "Completed"
+    if today >= start:
+        return "In Progress"
+    return "Planned"
 
 # Column name -> canonical key. Matching is done by normalized prefix so the app
 # survives minor header drift (trailing notes, whitespace, case).
@@ -331,6 +361,7 @@ def process(path):
         # ---- Gantt logic ----
         spec_eff = rec["spec_revised"] or rec["spec_planned"]
         rec["spec_effective"] = spec_eff
+        spec_eff_ts = pd.Timestamp(spec_eff) if spec_eff else None
         # diamond: spec complete marker (actual if available else effective)
         rec["gantt_spec"] = rec["spec_actual"] or spec_eff
 
@@ -383,10 +414,51 @@ def process(path):
         else:
             rec["assigned_sprint"] = "Unscheduled"
 
-        # ---- Risk flags ----
-        spec_eff_ts = pd.Timestamp(spec_eff) if spec_eff else None
+        # ---- Delivery recalculation ----
+        # If the (revised) spec date now lands after the planned dev start,
+        # the two milestones are out of order — dev can't start before spec
+        # is done. Forecast a new dev start (spec complete + buffer) and shift
+        # delivery by the original build duration, so downstream views (Sprint
+        # cards, Gantt, capacity) can show where the object will actually land.
+        # Only applies to work that's still actually open: objects already
+        # delivered (build_actual set, or status reads complete/done) are
+        # historical fact regardless of what a stale planned/revised spec date
+        # says, and "Dev Not Applicable" objects have no dev phase to conflict
+        # with in the first place. "Dev Start Date - Actual" alone isn't a
+        # reliable signal here — it's often left blank even on completed
+        # objects — so it's checked alongside, not instead of, those two.
         obj_stat = (rec["object_status"] or "").lower()
         completed = "complete" in obj_stat or "done" in obj_stat
+        dev_start_planned_ts = pd.Timestamp(rec["dev_start_planned"]) if rec["dev_start_planned"] else None
+        needs_replan = bool(
+            not dev_not_applicable and not completed and not rec["build_actual"] and not rec["dev_start_actual"]
+            and spec_eff_ts is not None and dev_start_planned_ts is not None
+            and spec_eff_ts + pd.Timedelta(days=SPEC_TO_DEV_BUFFER_DAYS) > dev_start_planned_ts
+        )
+        rec["needs_replan"] = needs_replan
+        if needs_replan:
+            recalc_start = spec_eff_ts + pd.Timedelta(days=SPEC_TO_DEV_BUFFER_DAYS)
+            if gantt_start is not None and gantt_delivery is not None and gantt_delivery > gantt_start:
+                duration = gantt_delivery - gantt_start
+            elif bh:
+                duration = pd.Timedelta(weeks=max(bh / HOURS_PER_DEV_WEEK, 0.2))
+            else:
+                duration = pd.Timedelta(weeks=1)
+            recalc_delivery = recalc_start + duration
+            rec["recalc_start"] = recalc_start.strftime("%Y-%m-%d")
+            rec["recalc_delivery"] = recalc_delivery.strftime("%Y-%m-%d")
+            recalc_phase = find_phase(recalc_delivery)
+            rec["recalc_sprint"] = recalc_phase or "Unscheduled"
+        else:
+            # Nothing to redo — recalc mirrors the plan-of-record exactly,
+            # including whatever fallback bucketing produced assigned_sprint
+            # (e.g. "Dev Not Applicable" objects use a looser rule than
+            # find_phase(gantt_delivery), which is None for them).
+            rec["recalc_start"] = rec["gantt_start"]
+            rec["recalc_delivery"] = rec["gantt_delivery"]
+            rec["recalc_sprint"] = rec["assigned_sprint"]
+
+        # ---- Risk flags ----
         lean = False
         if rec["fspec_status"] and "delay" in rec["fspec_status"].lower():
             lean = True
@@ -410,20 +482,99 @@ def process(path):
                 build = True
         rec["build_risk"] = build
 
+        # True once the real Dev + UT Completion date is recorded — distinct
+        # from "on schedule": drives whether a baseline comparison reflects an
+        # actual outcome or a still-moving forecast (see _apply_baseline).
+        rec["delivered"] = bool(rec["build_actual"])
+
         records.append(rec)
+
+    timeline_payload = [{**t, "status": _phase_status(t, today)} for t in PROGRAM_TIMELINE_EXPANDED]
 
     payload = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         "source_sheet": sheet,
         "record_count": len(records),
-        "timeline": PROGRAM_TIMELINE_EXPANDED,
+        "timeline": timeline_payload,
         "hours_per_dev_week": HOURS_PER_DEV_WEEK,
+        "recalc_buffer_days": SPEC_TO_DEV_BUFFER_DAYS,
         "records": records,
         "filters": _filter_options(records),
         "data_quality": _data_quality(records),
         "summary": _summary(records),
     }
     return payload
+
+
+# --------------------------------------------------------------------------- #
+# Baselining — snapshot key dates so later runs can show delay/slip vs plan.
+# The workbook itself has no history (it's re-parsed from scratch every
+# request), so baselines live in their own JSON file, keyed by RICE ID, and
+# are merged onto records by the /api/data route rather than in process()
+# itself — which baseline (if any) applies depends on a query param, and
+# process() stays a pure, baseline-agnostic ingestion entrypoint.
+#
+# Multiple named baselines are supported (see BASELINES_FILE); a single
+# legacy baseline captured before this existed (LEGACY_BASELINE_FILE) is
+# migrated in transparently the first time it's seen, so upgrading never
+# drops a baseline a user already captured.
+# --------------------------------------------------------------------------- #
+def _load_baselines():
+    if os.path.exists(BASELINES_FILE):
+        try:
+            with open(BASELINES_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            baselines = data.get("baselines") if isinstance(data, dict) else None
+            return baselines if isinstance(baselines, list) else []
+        except (OSError, ValueError):
+            return []
+
+    if os.path.exists(LEGACY_BASELINE_FILE):
+        try:
+            with open(LEGACY_BASELINE_FILE, "r", encoding="utf-8") as fh:
+                legacy = json.load(fh)
+        except (OSError, ValueError):
+            legacy = None
+        if isinstance(legacy, dict) and legacy.get("items"):
+            migrated = [{
+                "id": uuid.uuid4().hex[:10],
+                "name": "Baseline 1",
+                "captured_at": legacy.get("captured_at"),
+                "items": legacy["items"],
+            }]
+            _store_baselines(migrated)
+            return migrated
+
+    return []
+
+
+def _store_baselines(baselines):
+    tmp = BASELINES_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"baselines": baselines}, fh, indent=2)
+    os.replace(tmp, BASELINES_FILE)
+
+
+def _baseline_summary(b):
+    return {"id": b["id"], "name": b["name"], "captured_at": b["captured_at"], "count": len(b.get("items", {}))}
+
+
+def _apply_baseline(records, baseline):
+    """Attach baseline_<field> values + slip_days (current gantt_delivery vs
+    baseline gantt_delivery, in days — positive means later/delayed) to each
+    record in place, comparing against the given baseline (a dict from
+    _load_baselines(), or None). slip_days reflects an actual outcome once
+    `delivered` is true (gantt_delivery is then the real completion date) and
+    a still-moving forecast otherwise — same field either way, distinguished
+    via the `delivered` flag so the UI can label it correctly."""
+    items = baseline.get("items", {}) if baseline else {}
+    for rec in records:
+        snap = items.get(rec.get("rice_id")) if items else None
+        for field in BASELINE_FIELDS:
+            rec[f"baseline_{field}"] = snap.get(field) if snap else None
+        cur = rec.get("gantt_delivery")
+        base = snap.get("gantt_delivery") if snap else None
+        rec["slip_days"] = (pd.Timestamp(cur) - pd.Timestamp(base)).days if (cur and base) else None
 
 
 def _uniq_sorted(values):
@@ -486,6 +637,7 @@ def _summary(records):
         "total_in_scope": len(in_scope),
         "total_build_hours": round(sum(r["build_hours"] or 0 for r in records), 1),
         "in_scope_build_hours": round(sum(r["build_hours"] or 0 for r in in_scope), 1),
+        "needs_replan_count": sum(1 for r in records if r["needs_replan"]),
     }
 
 
@@ -570,6 +722,7 @@ def _plan_items(scope):
             "hours": float(rem),
             "estimated": estimated,
             "priority": priority,
+            "needs_replan": bool(r["needs_replan"]),
         })
     return items, done, not_applicable
 
@@ -662,6 +815,19 @@ def _iso(cal, d):
     return cal[d].strftime("%Y-%m-%d")
 
 
+def _phase_deadline_index(cal):
+    """Map each real program-timeline phase (Sprints/SIT/UAT/Cutover — not the
+    synthetic Gap tiles) to its last business day, as an index into `cal` —
+    the same day-index convention _run_scenario/_score expect for deadlines."""
+    idx = {}
+    for p in PROGRAM_TIMELINE_EXPANDED:
+        if p["type"] == "Gap":
+            continue
+        end_ts = cal[-1] if p.get("open_ended") else pd.Timestamp(p["end"])
+        idx[p["name"]] = max(int(cal.searchsorted(end_ts)) - 1, 0)
+    return idx
+
+
 def _type_key(t):
     """Canonical RICE-type label used to silo resource pools."""
     return (t or "").strip() or "Unspecified"
@@ -746,6 +912,7 @@ def _scenario_payload(label, description, items, deadlines, cal, cfg, hpw, ramp_
                     "complexity": a["item"]["complexity"],
                     "hours": round(a["item"]["hours"], 1),
                     "estimated": a["item"]["estimated"],
+                    "needs_replan": a["item"].get("needs_replan", False),
                     "start": _iso(cal, a["start"]),
                     "end": _iso(cal, a["end"]),
                     "deadline": _iso(cal, deadlines[a["item"]["rice_id"]]),
@@ -763,6 +930,7 @@ def _scenario_payload(label, description, items, deadlines, cal, cfg, hpw, ramp_
             misses.append({
                 "rice_id": it["rice_id"], "object_name": it["object_name"],
                 "rice_type": it["rice_type"], "hours": round(it["hours"], 1),
+                "needs_replan": it.get("needs_replan", False),
                 "finish": _iso(cal, fin) if fin is not None else None,
                 "deadline": _iso(cal, dl),
             })
@@ -882,6 +1050,25 @@ def build_resource_plan(records, params):
     current_team = sum(team_by_type.values())
     params = {**params, "current_team": current_team}
 
+    # Replan Recovery: objects flagged needs_replan (spec revised past planned
+    # dev start — see process()) get their original assigned_sprint window as
+    # their deadline instead of the generic two-wave bucket, so the hire-loop
+    # answers "what does it take to still land these where they were supposed
+    # to land, on top of everything else the team is already doing." Everything
+    # else keeps its two-wave deadline, so this isn't a smaller, easier-looking
+    # plan — it's the full portfolio with the slipped objects held to account.
+    phase_deadline_idx = _phase_deadline_index(cal)
+    record_by_id = {r["rice_id"]: r for r in scope}
+
+    def replan_deadline(it):
+        r = record_by_id.get(it["rice_id"])
+        if r and r["needs_replan"]:
+            return phase_deadline_idx.get(r["assigned_sprint"], sit1_dl)
+        return wave_deadlines[it["rice_id"]]
+
+    replan_deadlines = {it["rice_id"]: replan_deadline(it) for it in items}
+    replan_ids = sorted(it["rice_id"] for it in items if it["needs_replan"])
+
     scenarios = {
         "aggressive": _scenario_payload(
             "Aggressive", f"Everything done {buffer_days} working days before SIT 1 · up to 2 onboards/week per type",
@@ -898,6 +1085,12 @@ def build_resource_plan(records, params):
         "two_wave": _scenario_payload(
             "Two-Wave", "Integrations, extensions & complex work before SIT 1 · simple/medium reports may land before SIT 2",
             wave_items, wave_deadlines, cal,
+            {"max_onboards_per_week": 1}, hpw, ramp_days, ramp_pct, team_by_type),
+        "replan_recovery": _scenario_payload(
+            "Replan Recovery",
+            f"{len(replan_ids)} objects whose spec slipped past planned dev start, recovered to their original "
+            "sprint target · everything else stays on the standard two-wave plan",
+            items, replan_deadlines, cal,
             {"max_onboards_per_week": 1}, hpw, ramp_days, ramp_pct, team_by_type),
     }
 
@@ -917,6 +1110,7 @@ def build_resource_plan(records, params):
             "planned_hours": round(sum(it["hours"] for it in items), 1),
             "estimated_objects": est_count,
         },
+        "replan_objects": replan_ids,
         "scenarios": scenarios,
     }
 
@@ -955,6 +1149,17 @@ def api_data():
         payload = process(DATA_FILE)
     except Exception as exc:  # never crash — report cleanly
         return jsonify({"error": "processing_error", "message": str(exc)}), 500
+
+    baselines = _load_baselines()
+    baseline_id = request.args.get("baseline_id")
+    if baseline_id:
+        selected = next((b for b in baselines if b["id"] == baseline_id), None)
+    else:
+        selected = baselines[-1] if baselines else None  # default: most recently captured
+
+    _apply_baseline(payload["records"], selected)
+    payload["baselines"] = [_baseline_summary(b) for b in baselines]
+    payload["active_baseline_id"] = selected["id"] if selected else None
     return jsonify(payload)
 
 
@@ -997,6 +1202,62 @@ def api_upload():
     with open(DATA_FILE, "wb") as out:
         out.write(raw)
     return jsonify({"ok": True, "message": "File uploaded and validated."})
+
+
+@app.route("/api/baselines", methods=["GET"])
+def api_baselines_list():
+    return jsonify({"baselines": [_baseline_summary(b) for b in _load_baselines()]})
+
+
+@app.route("/api/baselines", methods=["POST"])
+def api_baselines_create():
+    if not os.path.exists(DATA_FILE):
+        return jsonify({"error": "no_data", "message": "No data file found. Please upload a workbook."}), 404
+    try:
+        payload = process(DATA_FILE)
+    except Exception as exc:
+        return jsonify({"error": "processing_error", "message": str(exc)}), 500
+
+    baselines = _load_baselines()
+    name = ((request.get_json(silent=True) or {}).get("name") or "").strip() or f"Baseline {len(baselines) + 1}"
+
+    items = {}
+    for rec in payload["records"]:
+        rid = rec.get("rice_id")
+        if not rid:
+            continue
+        items[rid] = {field: rec.get(field) for field in BASELINE_FIELDS}
+
+    new_baseline = {
+        "id": uuid.uuid4().hex[:10],
+        "name": name,
+        "captured_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "items": items,
+    }
+    baselines.append(new_baseline)
+    _store_baselines(baselines)
+    return jsonify({"ok": True, "baseline": _baseline_summary(new_baseline)})
+
+
+@app.route("/api/baselines/<baseline_id>", methods=["PATCH"])
+def api_baselines_rename(baseline_id):
+    name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "bad_request", "message": "A name is required."}), 400
+    baselines = _load_baselines()
+    b = next((x for x in baselines if x["id"] == baseline_id), None)
+    if not b:
+        return jsonify({"error": "not_found", "message": "Baseline not found."}), 404
+    b["name"] = name
+    _store_baselines(baselines)
+    return jsonify({"ok": True, "baseline": _baseline_summary(b)})
+
+
+@app.route("/api/baselines/<baseline_id>", methods=["DELETE"])
+def api_baselines_delete(baseline_id):
+    baselines = [b for b in _load_baselines() if b["id"] != baseline_id]
+    _store_baselines(baselines)
+    return jsonify({"ok": True, "baselines": [_baseline_summary(b) for b in baselines]})
 
 
 @app.route("/api/export")
