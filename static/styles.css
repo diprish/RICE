@@ -496,8 +496,20 @@ table.heat td.lbl, table.heat th.lbl { text-align: left; font-weight: 700; posit
   overflow: hidden; text-overflow: ellipsis; }
 .sd-idmod .sd-mod { display: block; font-size: var(--fs-badge); color: var(--muted); margin-top: 2px;
   overflow: hidden; text-overflow: ellipsis; }
-.sd-date { width: 90px; color: var(--text-2); }
-.sd-owner { width: 120px; color: var(--text-2); }
+.sd-date { width: 84px; color: var(--text-2); }
+.sd-dev { width: 92px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.sd-owner { width: 118px; color: var(--text-2); }
+/* header row */
+.sd-table thead th.sd-head, .sd-head th { font-size: var(--fs-badge); font-weight: 700; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted); text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
+  white-space: nowrap; background: var(--surface-2); }
+.sd-head th.sd-age { text-align: right; }
+/* rice-type group header */
+.sd-group td { padding: 9px 12px 6px; font-size: var(--fs-meta); font-weight: 800; letter-spacing: .02em;
+  color: var(--text); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.sd-gdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; vertical-align: middle; }
+.sd-gcount { margin-left: 8px; font-size: var(--fs-badge); font-weight: 700; color: var(--muted);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1px 8px; }
 .sd-av + .sd-oname { margin-left: 8px; }
 .sd-oname { color: var(--text-2); }
 .sd-av { width: 24px; height: 24px; border-radius: 50%; color: #fff; font-size: var(--fs-badge); font-weight: 700;
