@@ -1528,6 +1528,7 @@ function specExportRow(r, t, kind) {
   const row = {
     "RICE ID": r.rice_id, "Object Name": r.object_name, "Type": r.rice_type, "Module": r.module || "",
     "Spec Date": dateISO || "", "Source": r.spec_revised ? "Revised" : "Planned",
+    "Dev Start (Planned)": r.dev_start_planned || "",
   };
   row[kind === "delayed" ? "Days Overdue" : "Days Until Due"] = kind === "delayed" ? Math.abs(days) : days;
   row["Owner"] = r.functional_owner || "";
@@ -1541,9 +1542,7 @@ function specTable(list, t, kind) {
       ? "No delayed specs in the current filter. ✓"
       : "No specs due this week in the current filter. ✓"}</div>`;
   }
-  const rows = list.sort((a, b) =>
-    (parseISO(specDueDate(a)) || new Date(8640e12)) - (parseISO(specDueDate(b)) || new Date(8640e12))
-  ).map(r => {
+  const rowFor = (r) => {
     const dateISO = specDueDate(r);
     const days = Math.round((parseISO(dateISO) - t) / 86400000);
     const src = r.spec_revised ? "Revised" : "Planned";
@@ -1555,6 +1554,7 @@ function specTable(list, t, kind) {
       ? `<span class="sd-av" style="background:${av.color}">${esc(av.initials)}</span><span class="sd-oname" title="${esc(r.functional_owner)}">${esc(r.functional_owner)}</span>`
       : `<span class="sd-oname muted">—</span>`;
     const dateTip = `Spec ${src}${r.spec_pct != null ? " · " + Math.round(r.spec_pct) + "%" : ""} · ${esc(r.fspec_status || "")}`;
+    const devISO = r.dev_start_planned;
     return `<tr class="sd-row ${kind === "delayed" ? "blocked" : ""}" data-id="${esc(r.rice_id)}">
       <td class="sd-name" title="${esc(r.object_name)}">${esc(r.object_name)}</td>
       <td class="sd-idmod">
@@ -1562,11 +1562,41 @@ function specTable(list, t, kind) {
         <span class="sd-mod" title="${esc(r.module || "")}">${esc(r.module || "—")}</span>
       </td>
       <td class="sd-date" title="${dateTip}">${fmtDate(dateISO)}</td>
+      <td class="sd-dev">${devISO ? fmtDate(devISO) : `<span class="muted">—</span>`}</td>
       <td class="sd-owner">${owner}</td>
       <td class="sd-age ${kind === "delayed" ? "delayed" : "due"}">${age}</td>
     </tr>`;
+  };
+  const byDate = (a, b) =>
+    (parseISO(specDueDate(a)) || new Date(8640e12)) - (parseISO(specDueDate(b)) || new Date(8640e12));
+
+  // Group by RICE type, ordered by TYPE_ORDER (unknown types after, alphabetically).
+  const groups = {};
+  list.forEach(r => { const k = r.rice_type || "Unspecified"; (groups[k] = groups[k] || []).push(r); });
+  const types = Object.keys(groups).sort((a, b) => {
+    const ia = TYPE_ORDER.indexOf(a), ib = TYPE_ORDER.indexOf(b);
+    const ra = ia === -1 ? TYPE_ORDER.length : ia, rb = ib === -1 ? TYPE_ORDER.length : ib;
+    return ra - rb || a.localeCompare(b);
+  });
+
+  const body = types.map(type => {
+    const rows = groups[type].sort(byDate).map(rowFor).join("");
+    const color = TYPE_COLOR[type] || "var(--muted)";
+    return `<tr class="sd-group"><td colspan="6">
+      <span class="sd-gdot" style="background:${color}"></span>${esc(type)}
+      <span class="sd-gcount">${groups[type].length}</span></td></tr>${rows}`;
   }).join("");
-  return `<table class="sd-table"><tbody>${rows}</tbody></table>`;
+
+  return `<table class="sd-table">
+    <thead><tr class="sd-head">
+      <th class="sd-name">Object</th>
+      <th class="sd-idmod">RICE ID · Module</th>
+      <th class="sd-date">Spec Due</th>
+      <th class="sd-dev">Dev Start (Planned)</th>
+      <th class="sd-owner">Owner</th>
+      <th class="sd-age">${kind === "delayed" ? "Overdue" : "Due In"}</th>
+    </tr></thead>
+    <tbody>${body}</tbody></table>`;
 }
 
 /* ============================================================
