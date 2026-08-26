@@ -1503,6 +1503,7 @@ function renderSpecDeadlines(recs) {
   const wkEnd = parseISO(weekKey(t)); wkEnd.setDate(wkEnd.getDate() + 6); // Sunday of current week
   const delayed = [], due = [];
   recs.forEach(r => {
+    if ((r.dev_status || "").trim().toLowerCase() === "not applicable") return;
     if (!specIncomplete(r)) return;
     const d = parseISO(specDueDate(r));
     if (!d) return;
