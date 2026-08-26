@@ -489,10 +489,11 @@ table.heat td.lbl, table.heat th.lbl { text-align: left; font-weight: 700; posit
 .sd-row { border-bottom: 1px solid var(--border); cursor: pointer; }
 .sd-row:last-child { border-bottom: none; }
 .sd-row:hover { background: var(--surface-2); }
-.sd-table td.sd-name { font-weight: 700; color: var(--text); white-space: normal;   /* takes remaining width, wraps to avoid trimming */
+.sd-table td.sd-name { font-weight: 700; font-size: var(--fs-base); color: var(--text); white-space: normal;   /* takes remaining width, wraps to avoid trimming */
   overflow: visible; text-overflow: clip; line-height: 1.3; }
-.sd-idmod { width: 92px; }
-.sd-idmod .sd-id { display: block; font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-2);
+.sd-idmod { width: 100px; }
+.sd-table td.sd-idmod, .sd-thead th.sd-idmod { padding-left: 6px; padding-right: 6px; }
+.sd-idmod .sd-id { display: block; font-family: var(--mono); font-size: var(--fs-badge); color: var(--text-2);
   overflow: hidden; text-overflow: ellipsis; }
 .sd-idmod .sd-mod { display: block; font-size: var(--fs-badge); color: var(--muted); margin-top: 2px;
   overflow: hidden; text-overflow: ellipsis; }
@@ -501,7 +502,7 @@ table.heat td.lbl, table.heat th.lbl { text-align: left; font-weight: 700; posit
 .sd-dev { width: 82px; color: var(--text-2); }
 .sd-table td.sd-date, .sd-table td.sd-dev, .sd-thead th.sd-date, .sd-thead th.sd-dev {
   font-size: var(--fs-base); font-variant-numeric: tabular-nums; padding-left: 6px; padding-right: 6px; }
-.sd-owner { width: 90px; color: var(--text-2); }
+.sd-owner { width: 96px; color: var(--text-2); }
 /* header row */
 .sd-thead th { font-size: var(--fs-badge); font-weight: 700; text-transform: uppercase;
   letter-spacing: .04em; color: var(--muted); text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
@@ -514,7 +515,7 @@ table.heat td.lbl, table.heat th.lbl { text-align: left; font-weight: 700; posit
 .sd-gcount { margin-left: 8px; font-size: var(--fs-badge); font-weight: 700; color: var(--muted);
   background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1px 8px; }
 .sd-av + .sd-oname { margin-left: 8px; }
-.sd-oname { color: var(--text-2); }
+.sd-oname { color: var(--text-2); font-size: var(--fs-base); }
 .sd-av { width: 24px; height: 24px; border-radius: 50%; color: #fff; font-size: var(--fs-badge); font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center; letter-spacing: .02em; vertical-align: middle; }
 .sd-age { width: 80px; text-align: right; font-size: var(--fs-meta); font-weight: 700; white-space: nowrap; }
