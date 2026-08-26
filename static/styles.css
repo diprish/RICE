@@ -491,19 +491,19 @@ table.heat td.lbl, table.heat th.lbl { text-align: left; font-weight: 700; posit
 .sd-row:hover { background: var(--surface-2); }
 .sd-table td.sd-name { font-weight: 700; color: var(--text); white-space: normal;   /* takes remaining width, wraps to avoid trimming */
   overflow: visible; text-overflow: clip; line-height: 1.3; }
-.sd-idmod { width: 126px; }
+.sd-idmod { width: 100px; }
 .sd-idmod .sd-id { display: block; font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-2);
   overflow: hidden; text-overflow: ellipsis; }
 .sd-idmod .sd-mod { display: block; font-size: var(--fs-badge); color: var(--muted); margin-top: 2px;
   overflow: hidden; text-overflow: ellipsis; }
-.sd-date { width: 84px; color: var(--text-2); }
-.sd-dev { width: 92px; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.sd-owner { width: 118px; color: var(--text-2); }
+.sd-date { width: 70px; color: var(--text-2); }
+.sd-dev { width: 72px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.sd-owner { width: 96px; color: var(--text-2); }
 /* header row */
-.sd-table thead th.sd-head, .sd-head th { font-size: var(--fs-badge); font-weight: 700; text-transform: uppercase;
+.sd-thead th { font-size: var(--fs-badge); font-weight: 700; text-transform: uppercase;
   letter-spacing: .04em; color: var(--muted); text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
-  white-space: nowrap; background: var(--surface-2); }
-.sd-head th.sd-age { text-align: right; }
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: var(--surface-2); }
+.sd-thead th.sd-age { text-align: right; }
 /* rice-type group header */
 .sd-group td { padding: 9px 12px 6px; font-size: var(--fs-meta); font-weight: 800; letter-spacing: .02em;
   color: var(--text); background: var(--surface-2); border-bottom: 1px solid var(--border); }
@@ -514,7 +514,7 @@ table.heat td.lbl, table.heat th.lbl { text-align: left; font-weight: 700; posit
 .sd-oname { color: var(--text-2); }
 .sd-av { width: 24px; height: 24px; border-radius: 50%; color: #fff; font-size: var(--fs-badge); font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center; letter-spacing: .02em; vertical-align: middle; }
-.sd-age { width: 104px; text-align: right; font-size: var(--fs-meta); font-weight: 700; white-space: nowrap; }
+.sd-age { width: 84px; text-align: right; font-size: var(--fs-meta); font-weight: 700; white-space: nowrap; }
 .sd-age.delayed { color: var(--dl-red); }
 .sd-age.due { color: var(--dl-orange); }
 @media (max-width: 1100px) { .sd-cols { grid-template-columns: 1fr; } }

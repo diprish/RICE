@@ -1588,11 +1588,11 @@ function specTable(list, t, kind) {
   }).join("");
 
   return `<table class="sd-table">
-    <thead><tr class="sd-head">
+    <thead><tr class="sd-thead">
       <th class="sd-name">Object</th>
       <th class="sd-idmod">RICE ID · Module</th>
       <th class="sd-date">Spec Due</th>
-      <th class="sd-dev">Dev Start (Planned)</th>
+      <th class="sd-dev">Dev Start</th>
       <th class="sd-owner">Owner</th>
       <th class="sd-age">${kind === "delayed" ? "Overdue" : "Due In"}</th>
     </tr></thead>
