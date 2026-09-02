@@ -1618,6 +1618,7 @@ function renderOwnerFocus(recs) {
 
   const matches = [];
   recs.forEach(r => {
+    if (r.spec_pct != null && Math.round(r.spec_pct) === 100) return; // hide fully-specced objects
     const reasons = [];
     if (isDelayed(r)) reasons.push("Delayed");
     if (isDueThisWeek(r)) reasons.push("Spec due this week");
