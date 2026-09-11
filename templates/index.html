@@ -33,6 +33,7 @@
     <a href="#sec-rawstatus">Object Status</a>
     <a href="#sec-sprints">Sprints</a>
     <a href="#sec-timeline">Timeline</a>
+    <a href="#sec-sit">SIT Readiness</a>
     <a href="#sec-plan">Delivery Plan</a>
     <a href="#sec-capacity">Capacity</a>
     <a href="#sec-resplan">Resource Plan</a>
@@ -142,6 +143,36 @@
     <h2 class="block-title">Program Timeline <span class="muted">— Sprints · SITs · UAT · Cutover · Post Go-Live at a glance</span></h2>
     <div class="gantt-legend" id="timelineLegend"></div>
     <div id="timelineScroll" class="gantt-scroll"></div>
+  </section>
+
+  <!-- SIT READINESS -->
+  <section id="sec-sit" class="block">
+    <h2 class="block-title">SIT 1 Readiness
+      <span class="muted">— from the workbook's <b>SIT Readiness</b> column · is each object testable <b>before</b>, <b>during</b>, or <b>not within</b> SIT 1 (Sep 28 – Oct 30, 2026)</span>
+    </h2>
+    <div id="sitBar" class="sit-bar"></div>
+    <div id="sitBuckets" class="sit-buckets"></div>
+    <div id="sitNote" class="sit-note"></div>
+    <div class="sit-detail-cols">
+      <div class="sd-card">
+        <div class="sd-head"><span class="sd-title">Getting ready <b>during</b> SIT 1</span>
+          <span class="muted">— by the week each becomes testable</span>
+          <span class="count-chip amber" id="sitDuringCount">0</span>
+          <button type="button" class="export-btn" id="exportSitDuring" title="Export to Excel">⭳ Excel</button>
+        </div>
+        <div id="sitDuring" class="sd-scroll"></div>
+      </div>
+      <div class="sd-card">
+        <div class="sd-head"><span class="sd-title"><b>Will not</b> be ready in SIT 1</span>
+          <span class="muted">— After SIT 1 bucket</span>
+          <span class="count-chip red" id="sitNotCount">0</span>
+          <button type="button" class="export-btn" id="exportSitNot" title="Export to Excel">⭳ Excel</button>
+        </div>
+        <div id="sitNot" class="sd-scroll"></div>
+      </div>
+    </div>
+    <h3 class="sub-title">Where the work sits <span class="muted">— readiness split by RICE type</span></h3>
+    <div id="sitByType" class="sit-bytype"></div>
   </section>
 
   <!-- DELIVERY PLAN: GRID -->

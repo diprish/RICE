@@ -458,6 +458,63 @@ table.heat td.lbl, table.heat th.lbl { text-align: left; font-weight: 700; posit
 .risk-item .ri-name { font-weight: 700; }
 .risk-item .ri-meta { font-size: var(--fs-meta); color: var(--text-2); margin-top: 3px; display: flex; gap: 12px; flex-wrap: wrap; }
 .risk-empty { color: var(--muted); padding: 16px; text-align: center; }
+.risk-item .ri-flag { color: var(--dl-red); font-weight: 700; }
+
+/* ---------- SIT 1 readiness (executive three-bucket view) ---------- */
+/* headline proportion bar */
+.sit-bar { display: flex; height: 34px; border-radius: 9px; overflow: hidden; box-shadow: var(--shadow);
+  background: var(--surface-2); margin-bottom: 16px; }
+.sit-bar .sb-seg { display: flex; align-items: center; justify-content: center; color: #fff;
+  font-weight: 800; font-size: var(--fs-meta); min-width: 2px; transition: flex .3s ease; }
+
+/* three bucket cards */
+.sit-buckets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.sit-b { position: relative; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 18px 16px 20px; overflow: hidden; }
+.sit-b .sb-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 5px; }
+.sit-b .sb-n { font-size: 40px; font-weight: 800; line-height: 1; letter-spacing: -1px; display: flex; align-items: baseline; gap: 10px; }
+.sit-b .sb-pct { font-size: 16px; font-weight: 700; color: var(--text-2); }
+.sit-b .sb-lbl { font-size: var(--fs-body); font-weight: 700; margin-top: 8px; }
+.sit-b .sb-sub { font-size: var(--fs-meta); color: var(--muted); margin-top: 3px; }
+.sit-b.good .sb-n { color: var(--dl-green); }
+.sit-b.info .sb-n { color: var(--dl-blue); }
+.sit-b.bad  .sb-n { color: var(--dl-red); }
+
+.sit-note { margin: 14px 0 4px; font-size: var(--fs-meta); color: var(--text-2);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px 14px; }
+
+/* detail panels reuse the spec-deadlines table styling, but full-width and
+   stacked so every column shows its complete value — nothing is trimmed. */
+.sit-detail-cols { display: grid; grid-template-columns: 1fr; gap: 22px; align-items: start; margin-top: 18px; }
+.sd-gsub { color: var(--muted); font-weight: 500; font-size: var(--fs-badge); margin-left: 8px; }
+/* size columns to content (not the shared fixed/ellipsis layout) */
+#sitDuring, #sitNot { overflow-x: auto; }
+#sitDuring .sd-table, #sitNot .sd-table { table-layout: auto; }
+#sitDuring .sd-table td, #sitNot .sd-table td,
+#sitDuring .sd-thead th, #sitNot .sd-thead th { overflow: visible; text-overflow: clip; }
+#sitDuring .sd-idmod, #sitNot .sd-idmod,
+#sitDuring .sd-dev, #sitNot .sd-dev,
+#sitDuring .sd-date, #sitNot .sd-date,
+#sitDuring .sd-owner, #sitNot .sd-owner { width: auto; white-space: nowrap; }
+#sitDuring .sd-idmod .sd-id, #sitNot .sd-idmod .sd-id,
+#sitDuring .sd-idmod .sd-mod, #sitNot .sd-idmod .sd-mod,
+#sitDuring .sd-oname, #sitNot .sd-oname { overflow: visible; text-overflow: clip; white-space: nowrap; }
+#sitDuring .sd-table td.sd-name, #sitNot .sd-table td.sd-name { min-width: 240px; }
+
+/* readiness by RICE type */
+.sit-bytype { display: flex; flex-direction: column; gap: 7px; }
+.sit-tt-row { display: grid; grid-template-columns: 120px 1fr 84px; align-items: center; gap: 10px; }
+.sit-tt-row .tt-name { font-weight: 700; font-size: var(--fs-meta); }
+.sit-tt-row .tt-bar { display: flex; height: 18px; border-radius: 5px; overflow: hidden; background: var(--surface-2); }
+.sit-tt-row .tt-bar span { display: block; height: 100%; }
+.sit-tt-row .tt-count { font-family: var(--mono); font-size: var(--fs-badge); color: var(--text-2); text-align: right; }
+.sit-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: var(--fs-badge); color: var(--text-2); }
+.sit-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.sit-legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+@media (max-width: 1024px) {
+  .sit-buckets { grid-template-columns: 1fr; }
+}
 
 /* ---------- owner focus ---------- */
 .owner-focus { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 16px; align-items: start; }

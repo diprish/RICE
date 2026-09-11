@@ -118,6 +118,7 @@ COLUMN_MAP = {
     "Object Description": "description",
     "Module": "module",
     "Workstream": "workstream",
+    "SIT Readiness": "sit_readiness",
     "Object Status": "object_status",
     "Accountable Org": "accountable_org",
     "Operation System": "operation_system",
@@ -325,7 +326,7 @@ def process(path):
                     "tech_spec_owner", "rice_owner", "rice_status", "fspec_status",
                     "dev_status", "fut_status", "build_status", "fut_required",
                     "method", "interface_direction", "frequency", "sub_entity",
-                    "release", "comments"):
+                    "release", "comments", "sit_readiness"):
             rec[key] = clean_str(g(row, key))
 
         if not rec["rice_type"]:
@@ -598,6 +599,7 @@ def _filter_options(records):
         "technical_owner": _uniq_sorted(r["technical_owner"] for r in records),
         "complexity": _uniq_sorted(r["complexity"] for r in records),
         "assigned_sprint": _uniq_sorted(r["assigned_sprint"] for r in records),
+        "sit_readiness": _uniq_sorted(r["sit_readiness"] for r in records),
     }
 
 

@@ -750,6 +750,7 @@ function renderAll(recs) {
   renderRawStatus(recs);
   renderSprintSummary(recs);
   renderProgramTimeline(recs);
+  renderSitReadiness(recs);
   renderGrid(recs);
   if (State.planView === "gantt") renderGantt(recs);
   renderCapacity(recs);
@@ -1426,6 +1427,183 @@ function renderCapacity(recs) {
 }
 
 /* ============================================================
+   SIT 1 READINESS — driven by the workbook "SIT Readiness" column.
+   An executive three-bucket view: testable BEFORE SIT 1, getting
+   ready DURING SIT 1 (which week), or WILL NOT be ready (after
+   SIT 1, or not yet assessed). Details for the during / not-ready
+   buckets so stakeholders can see exactly which objects they are.
+   ============================================================ */
+const SIT1_WEEKS = 5;
+// SIT 1 weeks, in order, with the date each becomes testable.
+const SIT_WEEKS = [
+  { key: "wk1", label: "SIT 1 · Week 1", by: "2026-10-02" },
+  { key: "wk2", label: "SIT 1 · Week 2", by: "2026-10-09" },
+  { key: "wk3", label: "SIT 1 · Week 3", by: "2026-10-16" },
+  { key: "wk4", label: "SIT 1 · Week 4", by: "2026-10-23" },
+  { key: "wk5", label: "SIT 1 · Week 5", by: "2026-10-30" },
+];
+const SIT_WEEK_LABEL = Object.fromEntries(SIT_WEEKS.map(s => [s.key, s.label]));
+const SIT_COLOR = { before: "#3f9d6b", during: "#00A3E0", after: "#DA291C", blank: "#e0a33e" };
+
+// Classify a raw SIT Readiness string into a canonical bucket:
+// "before" | "wk1".."wk5" | "after" | "na" | "blank" | "other".
+function sitBucket(raw) {
+  const k = (raw || "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (!k) return "blank";
+  if (k.includes("not applicable") || k === "n/a" || k === "na") return "na";
+  if (k.includes("before")) return "before";
+  if (k.includes("after")) return "after";
+  const m = k.match(/w(?:ee)?k\s*(\d+)/);
+  if (m) { const n = +m[1]; if (n >= 1 && n <= SIT1_WEEKS) return "wk" + n; }
+  return "other";
+}
+const SIT_IS_DURING = (b) => /^wk[1-5]$/.test(b);
+
+function renderSitReadiness(recs) {
+  const counts = {};
+  recs.forEach(r => { const b = sitBucket(r.sit_readiness); counts[b] = (counts[b] || 0) + 1; });
+  const c = k => counts[k] || 0;
+
+  const na = c("na");
+  const blank = c("blank") + c("other");            // blank / unrecognized → treated as After SIT 1
+  const afterExplicit = c("after");                 // explicitly marked "After SIT 1"
+  const before = c("before");
+  const during = SIT_WEEKS.reduce((n, s) => n + c(s.key), 0);
+  const notReady = afterExplicit + blank;           // won't be ready during SIT 1 (After SIT 1 bucket)
+  const applicable = before + during + notReady;    // everything except Not Applicable
+  const pct = n => applicable ? Math.round(100 * n / applicable) : 0;
+
+  // ---- Headline proportion bar (100% stacked) ----
+  const seg = (n, color, label) => n
+    ? `<span class="sb-seg" style="flex:${n};background:${color}" title="${label}: ${n} (${pct(n)}%)">${pct(n) >= 7 ? `${n}` : ""}</span>`
+    : "";
+  $("#sitBar").innerHTML = applicable
+    ? seg(before, SIT_COLOR.before, "Ready before SIT 1")
+      + seg(during, SIT_COLOR.during, "Getting ready during SIT 1")
+      + seg(notReady, SIT_COLOR.after, "After SIT 1")
+    : `<span class="sb-seg" style="flex:1;background:var(--surface-2)"></span>`;
+
+  // ---- Three bucket cards ----
+  const bucket = (n, label, sub, color, cls) =>
+    `<div class="sit-b ${cls}"><span class="sb-bar" style="background:${color}"></span>
+       <div class="sb-n">${n}<span class="sb-pct">${pct(n)}%</span></div>
+       <div class="sb-lbl">${label}</div><div class="sb-sub">${sub}</div></div>`;
+  $("#sitBuckets").innerHTML =
+    bucket(before, "Ready <b>before</b> SIT 1", "Testable at SIT 1 kick-off", SIT_COLOR.before, "good") +
+    bucket(during, "Getting ready <b>during</b> SIT 1", "Phased in across the 5 SIT weeks", SIT_COLOR.during, "info") +
+    bucket(notReady, "<b>After</b> SIT 1", "Not ready within SIT 1", SIT_COLOR.after, "bad");
+
+  // ---- Coverage note ----
+  $("#sitNote").innerHTML =
+    `<b>${applicable}</b> in-scope objects` + (na ? ` · <b>${na}</b> Not Applicable excluded` : "") +
+    ` · <b>${before + during}</b> ready by end of SIT 1 (<b>${pct(before + during)}%</b>), <b>${notReady}</b> fall after SIT 1.`;
+
+  // ---- Detail: getting ready DURING SIT 1, grouped by week ----
+  const duringGroups = SIT_WEEKS.map(s => ({
+    label: s.label, sub: "by " + fmtDate(s.by), color: SIT_COLOR.during,
+    rows: recs.filter(r => sitBucket(r.sit_readiness) === s.key),
+  })).filter(g => g.rows.length);
+  $("#sitDuring").innerHTML = sitGroupedTable(duringGroups);
+  $("#sitDuringCount").textContent = during;
+  State.tables.sitDuring = duringGroups.flatMap(g => g.rows.map(r => sitExportRow(r, g.label)));
+
+  // ---- Detail: WILL NOT be ready — all in the After SIT 1 bucket ----
+  const notReadyList = recs.filter(r => {
+    const b = sitBucket(r.sit_readiness);
+    return b === "after" || b === "blank" || b === "other";
+  });
+  const notGroups = [{ label: "After SIT 1", sub: "", color: SIT_COLOR.after, rows: notReadyList }]
+    .filter(g => g.rows.length);
+  $("#sitNot").innerHTML = sitGroupedTable(notGroups);
+  $("#sitNotCount").textContent = notReady;
+  State.tables.sitNot = notReadyList.map(r => sitExportRow(r, "After SIT 1"));
+
+  // ---- Where the work sits: readiness split by RICE type ----
+  const types = TYPE_ORDER.filter(t => recs.some(r => r.rice_type === t))
+    .concat([...new Set(recs.map(r => r.rice_type))].filter(t => !TYPE_ORDER.includes(t)));
+  $("#sitByType").innerHTML = types.map(t => {
+    const tc = {};
+    recs.filter(r => r.rice_type === t).forEach(r => { const b = sitBucket(r.sit_readiness); tc[b] = (tc[b] || 0) + 1; });
+    const tb = tc.before || 0;
+    const td = SIT_WEEKS.reduce((n, s) => n + (tc[s.key] || 0), 0);
+    const ta = (tc.after || 0) + (tc.blank || 0) + (tc.other || 0);
+    const tapp = tb + td + ta;
+    if (!tapp) return "";
+    const bseg = (n, color, title) => n ? `<span style="width:${100 * n / tapp}%;background:${color}" title="${title}: ${n}"></span>` : "";
+    return `<div class="sit-tt-row">
+      <span class="tt-name" style="color:${TYPE_COLOR[t] || "var(--muted)"}">${esc(t)}</span>
+      <span class="tt-bar">${bseg(tb, SIT_COLOR.before, "Before SIT 1")}${bseg(td, SIT_COLOR.during, "During SIT 1")}${bseg(ta, SIT_COLOR.after, "After SIT 1")}</span>
+      <span class="tt-count">${tb + td}/${tapp} ready</span>
+    </div>`;
+  }).join("") + `<div class="sit-legend">
+      <span><i style="background:${SIT_COLOR.before}"></i>Before SIT 1</span>
+      <span><i style="background:${SIT_COLOR.during}"></i>During SIT 1</span>
+      <span><i style="background:${SIT_COLOR.after}"></i>After SIT 1</span>
+    </div>`;
+
+  // wire drilldowns
+  $$("#sitDuring .sd-row, #sitNot .sd-row").forEach(el =>
+    el.addEventListener("click", () => {
+      const r = recs.find(x => x.rice_id === el.dataset.id);
+      if (r) openModal(r.rice_id + " — " + r.object_name, [r], true);
+    }));
+}
+
+function sitExportRow(r, bucketLabel) {
+  return {
+    "SIT Bucket": bucketLabel, "RICE ID": r.rice_id, "Object Name": r.object_name,
+    "Type": r.rice_type, "Module": r.module || "", "SIT Readiness": r.sit_readiness || "(blank)",
+    "Object Status": r.object_status || "", "Dev Status": r.dev_status || "",
+    "Dev %": r.dev_pct ?? "", "Delivery Date": r.delivery_date || "",
+    "Owner": r.technical_owner || r.functional_owner || "",
+  };
+}
+
+// Grouped dense table for the SIT detail panels. groups: [{label, sub, color, rows}].
+function sitGroupedTable(groups) {
+  const total = groups.reduce((n, g) => n + g.rows.length, 0);
+  if (!total) return `<div class="risk-empty">None in the current filter. ✓</div>`;
+  const rowFor = (r) => {
+    const owner = r.technical_owner || r.functional_owner;
+    const av = avatarFor(owner);
+    const ownerCell = av
+      ? `<span class="sd-av" style="background:${av.color}">${esc(av.initials)}</span><span class="sd-oname" title="${esc(owner)}">${esc(owner)}</span>`
+      : `<span class="sd-oname muted">—</span>`;
+    const dev = `${esc(r.dev_status || "—")}${r.dev_pct != null ? " · " + Math.round(r.dev_pct) + "%" : ""}`;
+    return `<tr class="sd-row" data-id="${esc(r.rice_id)}">
+      <td class="sd-name" title="${esc(r.object_name)}">${esc(r.object_name)}</td>
+      <td class="sd-idmod">
+        <span class="sd-id">${esc(r.rice_id)}</span>
+        <span class="sd-mod" title="${esc(r.module || "")}">${esc(r.rice_type)}${r.module ? " · " + esc(r.module) : ""}</span>
+      </td>
+      <td class="sd-dev" title="Dev status">${dev}</td>
+      <td class="sd-date">${fmtDate(r.delivery_date)}</td>
+      <td class="sd-owner">${ownerCell}</td>
+    </tr>`;
+  };
+  const byType = (a, b) => {
+    const ia = TYPE_ORDER.indexOf(a.rice_type), ib = TYPE_ORDER.indexOf(b.rice_type);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || (a.object_name || "").localeCompare(b.object_name || "");
+  };
+  const body = groups.map(g => {
+    const rows = [...g.rows].sort(byType).map(rowFor).join("");
+    return `<tr class="sd-group"><td colspan="5">
+      <span class="sd-gdot" style="background:${g.color}"></span>${esc(g.label)}
+      ${g.sub ? `<span class="sd-gsub">${esc(g.sub)}</span>` : ""}
+      <span class="sd-gcount">${g.rows.length}</span></td></tr>${rows}`;
+  }).join("");
+  return `<table class="sd-table">
+    <thead><tr class="sd-thead">
+      <th class="sd-name">Object</th>
+      <th class="sd-idmod">RICE ID · Type</th>
+      <th class="sd-dev">Dev Status</th>
+      <th class="sd-date">Delivery</th>
+      <th class="sd-owner">Owner</th>
+    </tr></thead>
+    <tbody>${body}</tbody></table>`;
+}
+
+/* ============================================================
    RISK
    ============================================================ */
 function renderRisk(recs) {
@@ -1785,6 +1963,7 @@ function openModal(title, list, detailed) {
       ${f("Spec %", r.spec_pct)} ${f("Dev %", r.dev_pct)}
       ${f("Spec (planned)", fmtDate(r.spec_effective))} ${f("Spec (actual)", fmtDate(r.spec_actual))}
       ${f("Delivery", fmtDate(r.delivery_date))} ${f("Assigned Sprint", r.assigned_sprint)}
+      ${f("SIT Readiness", r.sit_readiness)}
       ${f("Source → Target", (r.source_system || "—") + " → " + (r.target_system || "—"))}
       ${r.comments ? f("Comments", r.comments) : ""}
     </div>`;
@@ -2051,6 +2230,8 @@ function initTableExports() {
     ["exportOwnerFocus", "ownerFocus", "rice_owner_focus.xlsx", "Owner Focus"],
     ["exportMatrix", "matrix", "rice_delivery_matrix.xlsx", "Matrix"],
     ["exportCapacity", "capacity", "rice_resource_capacity.xlsx", "Capacity"],
+    ["exportSitDuring", "sitDuring", "rice_sit_getting_ready_during.xlsx", "During SIT 1"],
+    ["exportSitNot", "sitNot", "rice_sit_not_ready.xlsx", "Not Ready SIT 1"],
   ].forEach(([btnId, key, filename, sheet]) => {
     const btn = $("#" + btnId);
     if (btn) btn.addEventListener("click", () => exportXLSX(filename, sheet, State.tables[key]));
