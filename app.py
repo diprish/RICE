@@ -56,9 +56,9 @@ PROGRAM_TIMELINE = [
     {"name": "Sprint 2", "type": "Sprint", "start": "2026-06-22", "end": "2026-07-17"},
     {"name": "Sprint 3", "type": "Sprint", "start": "2026-07-27", "end": "2026-08-21"},
     {"name": "SIT 1", "type": "SIT", "start": "2026-09-28", "end": "2026-10-30"},
-    {"name": "SIT 2", "type": "SIT", "start": "2026-11-09", "end": "2026-12-11"},
-    {"name": "UAT", "type": "UAT", "start": "2026-12-14", "end": "2027-01-15"},
-    {"name": "Cutover", "type": "Cutover", "start": "2027-01-18", "end": "2027-02-07"},
+    {"name": "SIT 2", "type": "SIT", "start": "2026-11-02", "end": "2026-11-27"},
+    {"name": "UAT", "type": "UAT", "start": "2026-11-30", "end": "2026-12-25"},
+    {"name": "Cutover", "type": "Cutover", "start": "2026-12-14", "end": "2027-01-01"},
     # Open-ended catch-all: anything delivered after Cutover lands here rather
     # than falling through to Unscheduled. "end" is a far-future sentinel, not
     # a real program date — open_ended tells the UI to render/scale it as "onward".
@@ -650,7 +650,7 @@ def _summary(records):
 # ARCS module (the "ARCS (ADP)" module is a different module and stays in) and
 # excluding Conversions. Blocked/delayed objects are schedulable like any other.
 SIT1_START = pd.Timestamp("2026-09-28")
-SIT2_START = pd.Timestamp("2026-11-09")
+SIT2_START = pd.Timestamp("2026-11-02")
 MAX_PLAN_RESOURCES = 40
 
 # Queue priority: complexity dominates (start complex work first to absorb
