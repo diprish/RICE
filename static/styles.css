@@ -467,6 +467,16 @@ table.heat td.lbl, table.heat th.lbl { text-align: left; font-weight: 700; posit
 .sit-bar .sb-seg { display: flex; align-items: center; justify-content: center; color: #fff;
   font-weight: 800; font-size: var(--fs-meta); min-width: 2px; transition: flex .3s ease; }
 
+/* cycle picker + week strip */
+.sit-cycle { font: inherit; font-size: var(--fs-body); font-weight: 700; margin: 0 8px; padding: 3px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+.sit-weeks { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 12px; }
+.sw-cell { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px 12px; }
+.sw-lbl { font-weight: 700; font-size: var(--fs-meta); display: flex; flex-direction: column; }
+.sw-lbl span { font-weight: 500; font-size: var(--fs-badge); color: var(--muted); }
+.sw-n { font-size: 24px; font-weight: 800; color: var(--dl-blue); margin-top: 4px; }
+.sw-cum { font-size: var(--fs-badge); color: var(--text-2); }
+
 /* three bucket cards */
 .sit-buckets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .sit-b { position: relative; background: var(--surface); border: 1px solid var(--border);

@@ -1427,49 +1427,85 @@ function renderCapacity(recs) {
 }
 
 /* ============================================================
-   SIT 1 READINESS — driven by the workbook "SIT Readiness" column.
-   An executive three-bucket view: testable BEFORE SIT 1, getting
-   ready DURING SIT 1 (which week), or WILL NOT be ready (after
-   SIT 1, or not yet assessed). Details for the during / not-ready
-   buckets so stakeholders can see exactly which objects they are.
+   TEST CYCLE READINESS — the user picks a test cycle (SIT 1, SIT 2,
+   UAT … from the program timeline) and every object is placed by its
+   ready date: actual Dev+UT completion, else the revised delivery
+   (spec slip recalculated), else planned. Before the cycle starts,
+   in which cycle week, or after the cycle ends / no date at all.
    ============================================================ */
-const SIT1_WEEKS = 5;
-// SIT 1 weeks, in order, with the date each becomes testable.
-const SIT_WEEKS = [
-  { key: "wk1", label: "SIT 1 · Week 1", by: "2026-10-02" },
-  { key: "wk2", label: "SIT 1 · Week 2", by: "2026-10-09" },
-  { key: "wk3", label: "SIT 1 · Week 3", by: "2026-10-16" },
-  { key: "wk4", label: "SIT 1 · Week 4", by: "2026-10-23" },
-  { key: "wk5", label: "SIT 1 · Week 5", by: "2026-10-30" },
-];
-const SIT_WEEK_LABEL = Object.fromEntries(SIT_WEEKS.map(s => [s.key, s.label]));
 const SIT_COLOR = { before: "#3f9d6b", during: "#00A3E0", after: "#DA291C", blank: "#e0a33e" };
+const DAY_MS = 864e5;
+const isoMs = (d) => Date.parse(d + "T00:00:00Z");
+const msIso = (ms) => new Date(ms).toISOString().slice(0, 10);
 
-// Classify a raw SIT Readiness string into a canonical bucket:
-// "before" | "wk1".."wk5" | "after" | "na" | "blank" | "other".
-function sitBucket(raw) {
-  const k = (raw || "").trim().toLowerCase().replace(/\s+/g, " ");
-  if (!k) return "blank";
-  if (k.includes("not applicable") || k === "n/a" || k === "na") return "na";
-  if (k.includes("before")) return "before";
-  if (k.includes("after")) return "after";
-  const m = k.match(/w(?:ee)?k\s*(\d+)/);
-  if (m) { const n = +m[1]; if (n >= 1 && n <= SIT1_WEEKS) return "wk" + n; }
-  return "other";
+const testCycles = () => (State.data?.timeline || []).filter(p => p.type === "SIT" || p.type === "UAT");
+
+// Calendar weeks counted from the cycle start; the last one is cut at the cycle end.
+function cycleWeeks(c) {
+  const s = isoMs(c.start), e = isoMs(c.end), out = [];
+  for (let i = 0, t = s; t <= e; i++, t += 7 * DAY_MS) {
+    out.push({ key: "wk" + (i + 1), label: `${c.name} · Week ${i + 1}`, start: msIso(t), end: msIso(Math.min(t + 6 * DAY_MS, e)) });
+  }
+  return out;
 }
-const SIT_IS_DURING = (b) => /^wk[1-5]$/.test(b);
+
+// When the object is testable: actual build, else revised (spec-slip recalculated), else planned.
+function sitReady(r) {
+  if ((r.dev_status || "").trim().toLowerCase() === "not applicable") return { na: true };
+  const date = r.build_actual || r.recalc_delivery || r.delivery_date || r.gantt_delivery || null;
+  const note = r.build_actual ? "actual" : r.needs_replan ? "revised"
+    : (!r.delivery_date && r.gantt_delivery_estimated) ? "est." : "";
+  return { date, note };
+}
+function readyCell(x) {
+  if (!x.date) return `<span class="muted">No date</span>`;
+  return fmtDate(x.date) + (x.note ? ` <span class="sd-gsub">${x.note}</span>` : "");
+}
+
+// "na" | "nodate" | "before" | "after" | "wkN" for one object against a cycle.
+function sitBucketFor(x, cycle) {
+  if (x.na) return "na";
+  if (!x.date) return "nodate";
+  if (x.date < cycle.start) return "before";
+  if (x.date > cycle.end) return "after";
+  return "wk" + (Math.floor((isoMs(x.date) - isoMs(cycle.start)) / (7 * DAY_MS)) + 1);
+}
+
+function initSitCycleSelect() {
+  const sel = $("#sitCycle"); if (!sel) return null;
+  const cycles = testCycles();
+  if (!cycles.length) return null;
+  if (sel.options.length !== cycles.length) {
+    sel.innerHTML = cycles.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
+    const today = new Date().toISOString().slice(0, 10);
+    State.sitCycle = (cycles.find(c => c.name === State.sitCycle) || cycles.find(c => c.end >= today) || cycles[cycles.length - 1]).name;
+    sel.addEventListener("change", () => { State.sitCycle = sel.value; renderSitReadiness(State.filtered); });
+  }
+  sel.value = State.sitCycle;
+  return cycles.find(c => c.name === State.sitCycle) || cycles[0];
+}
 
 function renderSitReadiness(recs) {
+  const cycle = initSitCycleSelect();
+  if (!cycle) return;
+  const weeks = cycleWeeks(cycle);
+  const N = cycle.name;
+  $("#sitTitle").textContent = `${N} Readiness`;
+  $("#sitSub").innerHTML = `— each object by its <b>ready date</b> (actual or revised build/dev completion) · testable <b>before</b>, <b>during</b> (by week) or <b>after</b> ${esc(N)} (${fmtDate(cycle.start)} – ${fmtDate(cycle.end)})`;
+
+  const ready = new Map(recs.map(r => [r.rice_id, sitReady(r)]));
+  const readyOf = (r) => ready.get(r.rice_id) || {};
+  const bucketOf = new Map(recs.map(r => [r.rice_id, sitBucketFor(readyOf(r), cycle)]));
+  const inB = (r) => bucketOf.get(r.rice_id);
   const counts = {};
-  recs.forEach(r => { const b = sitBucket(r.sit_readiness); counts[b] = (counts[b] || 0) + 1; });
+  recs.forEach(r => { counts[inB(r)] = (counts[inB(r)] || 0) + 1; });
   const c = k => counts[k] || 0;
 
   const na = c("na");
-  const blank = c("blank") + c("other");            // blank / unrecognized → treated as After SIT 1
-  const afterExplicit = c("after");                 // explicitly marked "After SIT 1"
   const before = c("before");
-  const during = SIT_WEEKS.reduce((n, s) => n + c(s.key), 0);
-  const notReady = afterExplicit + blank;           // won't be ready during SIT 1 (After SIT 1 bucket)
+  const during = weeks.reduce((n, w) => n + c(w.key), 0);
+  const after = c("after"), nodate = c("nodate");
+  const notReady = after + nodate;
   const applicable = before + during + notReady;    // everything except Not Applicable
   const pct = n => applicable ? Math.round(100 * n / applicable) : 0;
 
@@ -1478,9 +1514,9 @@ function renderSitReadiness(recs) {
     ? `<span class="sb-seg" style="flex:${n};background:${color}" title="${label}: ${n} (${pct(n)}%)">${pct(n) >= 7 ? `${n}` : ""}</span>`
     : "";
   $("#sitBar").innerHTML = applicable
-    ? seg(before, SIT_COLOR.before, "Ready before SIT 1")
-      + seg(during, SIT_COLOR.during, "Getting ready during SIT 1")
-      + seg(notReady, SIT_COLOR.after, "After SIT 1")
+    ? seg(before, SIT_COLOR.before, `Ready before ${N}`)
+      + seg(during, SIT_COLOR.during, `Getting ready during ${N}`)
+      + seg(notReady, SIT_COLOR.after, `After ${N} / no date`)
     : `<span class="sb-seg" style="flex:1;background:var(--surface-2)"></span>`;
 
   // ---- Three bucket cards ----
@@ -1489,56 +1525,64 @@ function renderSitReadiness(recs) {
        <div class="sb-n">${n}<span class="sb-pct">${pct(n)}%</span></div>
        <div class="sb-lbl">${label}</div><div class="sb-sub">${sub}</div></div>`;
   $("#sitBuckets").innerHTML =
-    bucket(before, "Ready <b>before</b> SIT 1", "Testable at SIT 1 kick-off", SIT_COLOR.before, "good") +
-    bucket(during, "Getting ready <b>during</b> SIT 1", "Phased in across the 5 SIT weeks", SIT_COLOR.during, "info") +
-    bucket(notReady, "<b>After</b> SIT 1", "Not ready within SIT 1", SIT_COLOR.after, "bad");
+    bucket(before, `Ready <b>before</b> ${esc(N)}`, `Ready date before ${fmtDate(cycle.start)}`, SIT_COLOR.before, "good") +
+    bucket(during, `Getting ready <b>during</b> ${esc(N)}`, `Phased in across ${weeks.length} weeks`, SIT_COLOR.during, "info") +
+    bucket(notReady, `<b>After</b> ${esc(N)}`, nodate ? `${after} later · ${nodate} with no date` : "Ready date after the cycle ends", SIT_COLOR.after, "bad");
 
   // ---- Coverage note ----
   $("#sitNote").innerHTML =
-    `<b>${applicable}</b> in-scope objects` + (na ? ` · <b>${na}</b> Not Applicable excluded` : "") +
-    ` · <b>${before + during}</b> ready by end of SIT 1 (<b>${pct(before + during)}%</b>), <b>${notReady}</b> fall after SIT 1.`;
+    `<b>${applicable}</b> objects` + (na ? ` · <b>${na}</b> Dev Not Applicable excluded` : "") +
+    ` · <b>${before + during}</b> ready by end of ${esc(N)} (<b>${pct(before + during)}%</b>), <b>${notReady}</b> fall after it.`;
 
-  // ---- Detail: getting ready DURING SIT 1, grouped by week ----
-  const duringGroups = SIT_WEEKS.map(s => ({
-    label: s.label, sub: "by " + fmtDate(s.by), color: SIT_COLOR.during,
-    rows: recs.filter(r => sitBucket(r.sit_readiness) === s.key),
+  // ---- Week-by-week strip: how many become ready each week, cumulative coverage ----
+  let cum = before;
+  $("#sitWeeks").innerHTML = weeks.map(w => {
+    const n = c(w.key); cum += n;
+    return `<div class="sw-cell"><div class="sw-lbl">Wk ${w.key.slice(2)}<span>${fmtDate(w.start)} – ${fmtDate(w.end)}</span></div>
+      <div class="sw-n">${n ? "+" + n : "—"}</div><div class="sw-cum">${pct(cum)}% cumulative</div></div>`;
+  }).join("");
+
+  // ---- Detail: getting ready DURING the cycle, grouped by week ----
+  const duringGroups = weeks.map(w => ({
+    label: w.label, sub: `${fmtDate(w.start)} – ${fmtDate(w.end)}`, color: SIT_COLOR.during,
+    rows: recs.filter(r => inB(r) === w.key),
   })).filter(g => g.rows.length);
-  $("#sitDuring").innerHTML = sitGroupedTable(duringGroups);
+  $("#sitDuringTitle").innerHTML = `Getting ready <b>during</b> ${esc(N)}`;
+  $("#sitDuring").innerHTML = sitGroupedTable(duringGroups, readyOf);
   $("#sitDuringCount").textContent = during;
-  State.tables.sitDuring = duringGroups.flatMap(g => g.rows.map(r => sitExportRow(r, g.label)));
+  State.tables.sitDuring = duringGroups.flatMap(g => g.rows.map(r => sitExportRow(r, g.label, readyOf(r))));
 
-  // ---- Detail: WILL NOT be ready — all in the After SIT 1 bucket ----
-  const notReadyList = recs.filter(r => {
-    const b = sitBucket(r.sit_readiness);
-    return b === "after" || b === "blank" || b === "other";
-  });
-  const notGroups = [{ label: "After SIT 1", sub: "", color: SIT_COLOR.after, rows: notReadyList }]
-    .filter(g => g.rows.length);
-  $("#sitNot").innerHTML = sitGroupedTable(notGroups);
+  // ---- Detail: WILL NOT be ready within the cycle ----
+  const notGroups = [
+    { label: `After ${N}`, sub: "", color: SIT_COLOR.after, rows: recs.filter(r => inB(r) === "after") },
+    { label: "No ready date", sub: "no actual, revised or planned build date", color: SIT_COLOR.blank, rows: recs.filter(r => inB(r) === "nodate") },
+  ].filter(g => g.rows.length);
+  $("#sitNotTitle").innerHTML = `<b>Will not</b> be ready in ${esc(N)}`;
+  $("#sitNot").innerHTML = sitGroupedTable(notGroups, readyOf);
   $("#sitNotCount").textContent = notReady;
-  State.tables.sitNot = notReadyList.map(r => sitExportRow(r, "After SIT 1"));
+  State.tables.sitNot = notGroups.flatMap(g => g.rows.map(r => sitExportRow(r, g.label, readyOf(r))));
 
   // ---- Where the work sits: readiness split by RICE type ----
   const types = TYPE_ORDER.filter(t => recs.some(r => r.rice_type === t))
     .concat([...new Set(recs.map(r => r.rice_type))].filter(t => !TYPE_ORDER.includes(t)));
   $("#sitByType").innerHTML = types.map(t => {
     const tc = {};
-    recs.filter(r => r.rice_type === t).forEach(r => { const b = sitBucket(r.sit_readiness); tc[b] = (tc[b] || 0) + 1; });
+    recs.filter(r => r.rice_type === t).forEach(r => { tc[inB(r)] = (tc[inB(r)] || 0) + 1; });
     const tb = tc.before || 0;
-    const td = SIT_WEEKS.reduce((n, s) => n + (tc[s.key] || 0), 0);
-    const ta = (tc.after || 0) + (tc.blank || 0) + (tc.other || 0);
+    const td = weeks.reduce((n, w) => n + (tc[w.key] || 0), 0);
+    const ta = (tc.after || 0) + (tc.nodate || 0);
     const tapp = tb + td + ta;
     if (!tapp) return "";
     const bseg = (n, color, title) => n ? `<span style="width:${100 * n / tapp}%;background:${color}" title="${title}: ${n}"></span>` : "";
     return `<div class="sit-tt-row">
       <span class="tt-name" style="color:${TYPE_COLOR[t] || "var(--muted)"}">${esc(t)}</span>
-      <span class="tt-bar">${bseg(tb, SIT_COLOR.before, "Before SIT 1")}${bseg(td, SIT_COLOR.during, "During SIT 1")}${bseg(ta, SIT_COLOR.after, "After SIT 1")}</span>
+      <span class="tt-bar">${bseg(tb, SIT_COLOR.before, "Before " + N)}${bseg(td, SIT_COLOR.during, "During " + N)}${bseg(ta, SIT_COLOR.after, "After " + N)}</span>
       <span class="tt-count">${tb + td}/${tapp} ready</span>
     </div>`;
   }).join("") + `<div class="sit-legend">
-      <span><i style="background:${SIT_COLOR.before}"></i>Before SIT 1</span>
-      <span><i style="background:${SIT_COLOR.during}"></i>During SIT 1</span>
-      <span><i style="background:${SIT_COLOR.after}"></i>After SIT 1</span>
+      <span><i style="background:${SIT_COLOR.before}"></i>Before ${esc(N)}</span>
+      <span><i style="background:${SIT_COLOR.during}"></i>During ${esc(N)}</span>
+      <span><i style="background:${SIT_COLOR.after}"></i>After ${esc(N)} / no date</span>
     </div>`;
 
   // wire drilldowns
@@ -1549,18 +1593,19 @@ function renderSitReadiness(recs) {
     }));
 }
 
-function sitExportRow(r, bucketLabel) {
+function sitExportRow(r, bucketLabel, x) {
   return {
-    "SIT Bucket": bucketLabel, "RICE ID": r.rice_id, "Object Name": r.object_name,
-    "Type": r.rice_type, "Module": r.module || "", "SIT Readiness": r.sit_readiness || "(blank)",
+    "Test Cycle Bucket": bucketLabel, "RICE ID": r.rice_id, "Object Name": r.object_name,
+    "Type": r.rice_type, "Module": r.module || "",
+    "Ready Date": x.date || "", "Ready Date Basis": x.note || (x.date ? "planned" : ""),
     "Object Status": r.object_status || "", "Dev Status": r.dev_status || "",
-    "Dev %": r.dev_pct ?? "", "Delivery Date": r.delivery_date || "",
+    "Dev %": r.dev_pct ?? "", "Workbook SIT Readiness": r.sit_readiness || "",
     "Owner": r.technical_owner || r.functional_owner || "",
   };
 }
 
 // Grouped dense table for the SIT detail panels. groups: [{label, sub, color, rows}].
-function sitGroupedTable(groups) {
+function sitGroupedTable(groups, readyOf) {
   const total = groups.reduce((n, g) => n + g.rows.length, 0);
   if (!total) return `<div class="risk-empty">None in the current filter. ✓</div>`;
   const rowFor = (r) => {
@@ -1577,7 +1622,7 @@ function sitGroupedTable(groups) {
         <span class="sd-mod" title="${esc(r.module || "")}">${esc(r.rice_type)}${r.module ? " · " + esc(r.module) : ""}</span>
       </td>
       <td class="sd-dev" title="Dev status">${dev}</td>
-      <td class="sd-date">${fmtDate(r.delivery_date)}</td>
+      <td class="sd-date">${readyCell(readyOf(r))}</td>
       <td class="sd-owner">${ownerCell}</td>
     </tr>`;
   };
@@ -1597,7 +1642,7 @@ function sitGroupedTable(groups) {
       <th class="sd-name">Object</th>
       <th class="sd-idmod">RICE ID · Type</th>
       <th class="sd-dev">Dev Status</th>
-      <th class="sd-date">Delivery</th>
+      <th class="sd-date">Ready date</th>
       <th class="sd-owner">Owner</th>
     </tr></thead>
     <tbody>${body}</tbody></table>`;
@@ -2230,8 +2275,8 @@ function initTableExports() {
     ["exportOwnerFocus", "ownerFocus", "rice_owner_focus.xlsx", "Owner Focus"],
     ["exportMatrix", "matrix", "rice_delivery_matrix.xlsx", "Matrix"],
     ["exportCapacity", "capacity", "rice_resource_capacity.xlsx", "Capacity"],
-    ["exportSitDuring", "sitDuring", "rice_sit_getting_ready_during.xlsx", "During SIT 1"],
-    ["exportSitNot", "sitNot", "rice_sit_not_ready.xlsx", "Not Ready SIT 1"],
+    ["exportSitDuring", "sitDuring", "rice_cycle_getting_ready_during.xlsx", "During Cycle"],
+    ["exportSitNot", "sitNot", "rice_cycle_not_ready.xlsx", "Not Ready"],
   ].forEach(([btnId, key, filename, sheet]) => {
     const btn = $("#" + btnId);
     if (btn) btn.addEventListener("click", () => exportXLSX(filename, sheet, State.tables[key]));

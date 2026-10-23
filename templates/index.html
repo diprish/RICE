@@ -31,7 +31,7 @@
     <a href="#sec-rawstatus">Object Status</a>
     <a href="#sec-sprints">Sprints</a>
     <a href="#sec-timeline">Timeline</a>
-    <a href="#sec-sit">SIT Readiness</a>
+    <a href="#sec-sit">Test Cycle Readiness</a>
     <a href="#sec-plan">Delivery Plan</a>
     <a href="#sec-capacity">Capacity</a>
     <a href="#sec-resplan">Resource Plan</a>
@@ -145,24 +145,26 @@
 
   <!-- SIT READINESS -->
   <section id="sec-sit" class="block">
-    <h2 class="block-title">SIT 1 Readiness
-      <span class="muted">— from the workbook's <b>SIT Readiness</b> column · is each object testable <b>before</b>, <b>during</b>, or <b>not within</b> SIT 1 (Sep 28 – Oct 30, 2026)</span>
+    <h2 class="block-title"><span id="sitTitle">Test Cycle Readiness</span>
+      <select id="sitCycle" class="sit-cycle" aria-label="Test cycle"></select>
+      <span class="muted" id="sitSub"></span>
     </h2>
     <div id="sitBar" class="sit-bar"></div>
     <div id="sitBuckets" class="sit-buckets"></div>
     <div id="sitNote" class="sit-note"></div>
+    <div id="sitWeeks" class="sit-weeks"></div>
     <div class="sit-detail-cols">
       <div class="sd-card">
-        <div class="sd-head"><span class="sd-title">Getting ready <b>during</b> SIT 1</span>
-          <span class="muted">— by the week each becomes testable</span>
+        <div class="sd-head"><span class="sd-title" id="sitDuringTitle">Getting ready <b>during</b> the cycle</span>
+          <span class="muted">— by the week each becomes ready</span>
           <span class="count-chip amber" id="sitDuringCount">0</span>
           <button type="button" class="export-btn" id="exportSitDuring" title="Export to Excel">⭳ Excel</button>
         </div>
         <div id="sitDuring" class="sd-scroll"></div>
       </div>
       <div class="sd-card">
-        <div class="sd-head"><span class="sd-title"><b>Will not</b> be ready in SIT 1</span>
-          <span class="muted">— After SIT 1 bucket</span>
+        <div class="sd-head"><span class="sd-title" id="sitNotTitle"><b>Will not</b> be ready in the cycle</span>
+          <span class="muted">— ready after the cycle, or no date</span>
           <span class="count-chip red" id="sitNotCount">0</span>
           <button type="button" class="export-btn" id="exportSitNot" title="Export to Excel">⭳ Excel</button>
         </div>
