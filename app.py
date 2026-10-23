@@ -9,6 +9,7 @@ Then open http://127.0.0.1:5000
 """
 
 import os
+import sys
 import io
 import re
 import json
@@ -23,15 +24,23 @@ from flask import Flask, jsonify, request, render_template, send_file
 # --------------------------------------------------------------------------- #
 # Configuration
 # --------------------------------------------------------------------------- #
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
-DATA_FILE = os.path.join(BASE_DIR, "rice_tracker_data.xlsx")
-SAVED_FILTERS_FILE = os.path.join(BASE_DIR, "saved_filters.json")
-BASELINES_FILE = os.path.join(BASE_DIR, "baselines.json")
+FROZEN = getattr(sys, "frozen", False)  # running as a PyInstaller bundle
+# Read-only app resources (templates/static) live inside the bundle when frozen.
+BASE_DIR = getattr(sys, "_MEIPASS", None) or os.path.abspath(os.path.dirname(__file__))
+# Mutable data (workbook, saved filters, baselines) must outlive the bundle's
+# temp dir, so frozen builds keep it in a "data" folder next to the executable.
+# RICE_DATA_DIR overrides either mode.
+DATA_DIR = os.environ.get("RICE_DATA_DIR") or (
+    os.path.join(os.path.dirname(sys.executable), "data") if FROZEN else BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
+UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
+DATA_FILE = os.path.join(DATA_DIR, "rice_tracker_data.xlsx")
+SAVED_FILTERS_FILE = os.path.join(DATA_DIR, "saved_filters.json")
+BASELINES_FILE = os.path.join(DATA_DIR, "baselines.json")
 # Pre-multi-baseline storage format (single, overwritable baseline). Read once
 # to migrate an already-captured baseline into the new format the first time
 # baselines.json doesn't exist yet, so upgrading the app doesn't lose it.
-LEGACY_BASELINE_FILE = os.path.join(BASE_DIR, "baseline.json")
+LEGACY_BASELINE_FILE = os.path.join(DATA_DIR, "baseline.json")
 # Per-item fields snapshotted into a baseline, for delay/slip comparison later.
 BASELINE_FIELDS = ("spec_planned", "dev_start_planned", "build_planned", "fut_planned",
                    "gantt_start", "gantt_delivery")
@@ -44,7 +53,8 @@ SPEC_TO_DEV_BUFFER_DAYS = 2
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "templates"),
+            static_folder=os.path.join(BASE_DIR, "static"))
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload cap
 
 # Program timeline (fixed configuration from the program plan). "status" is
@@ -1330,5 +1340,20 @@ def health():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f" * RICE Tracker dashboard starting on http://127.0.0.1:{port}")
-    app.run(host="127.0.0.1", port=port, debug=True)
+    if FROZEN and "PORT" not in os.environ:
+        # Port 5000 is often taken (e.g. macOS AirPlay Receiver); take the next free one.
+        import socket
+        while True:
+            with socket.socket() as sk:
+                if sk.connect_ex(("127.0.0.1", port)) != 0:
+                    break
+            port += 1
+    url = f"http://127.0.0.1:{port}"
+    print(f" * RICE Tracker dashboard starting on {url}")
+    if FROZEN:
+        import threading, webbrowser
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+        print(f" * Data folder: {DATA_DIR}\n * Close this window to stop the app.")
+        app.run(host="127.0.0.1", port=port, debug=False)
+    else:
+        app.run(host="127.0.0.1", port=port, debug=True)

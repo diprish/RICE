@@ -4,3 +4,8 @@ saved_filters.json
 baseline.json
 baselines.json
 __pycache__/
+build/
+dist/
+*.spec
+data/
+uploads/

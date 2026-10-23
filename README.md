@@ -101,3 +101,13 @@ The backend uses pandas with safe parsing throughout, so malformed data never cr
 ## Tech stack
 
 Flask · pandas · openpyxl on the backend; vanilla JS with Chart.js, AG Grid Community, and Choices.js (loaded via CDN) on the frontend. No build step and no JS framework required.
+
+## Offline bundle (no install for recipients)
+
+`./build.sh` produces `dist/RICE-Tracker/` — a self-contained app (Python + all JS/CSS/fonts bundled, no internet needed).
+Zip that folder and share it; recipients unzip and double-click `RICE-Tracker` (a console window opens, then the browser).
+PyInstaller can't cross-compile, so build on each OS you need (macOS, Windows).
+
+Persistent data lives in `data/` next to the executable (workbook, saved filters, baselines). Upload a newer
+workbook in the UI, or drop `rice_tracker_data.xlsx` into `data/`. Keep `data/` when replacing the app with a new build.
+Override the location with `RICE_DATA_DIR`. If port 5000 is busy the bundle picks the next free port.
