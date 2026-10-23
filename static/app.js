@@ -1430,7 +1430,7 @@ function renderCapacity(recs) {
    TEST CYCLE READINESS — the user picks a test cycle (SIT 1, SIT 2,
    UAT … from the program timeline) and every object is placed by its
    ready date: Dev + UT completion — Actual, else Revised, else
-   Planned. Before the cycle starts,
+   Planned; Completed objects always count as ready. Before the cycle starts,
    in which cycle week, or after the cycle ends / no date at all.
    ============================================================ */
 const SIT_COLOR = { before: "#3f9d6b", during: "#00A3E0", after: "#DA291C", blank: "#e0a33e" };
@@ -1449,22 +1449,27 @@ function cycleWeeks(c) {
   return out;
 }
 
+// Completed work is already testable, whatever its (possibly future/stale) date says.
+const sitIsDone = (r) => /complete|done/i.test(r.object_status || "") || /^completed?$/i.test((r.dev_status || "").trim());
+
 // When the object is testable: Actual Dev+UT completion, else Revised, else Planned.
 function sitReady(r) {
   if ((r.dev_status || "").trim().toLowerCase() === "not applicable") return { na: true };
-  if (r.build_actual) return { date: r.build_actual, note: "actual" };
-  if (r.build_revised) return { date: r.build_revised, note: "revised" };
-  if (r.build_planned) return { date: r.build_planned, note: "planned" };
-  return { date: null, note: "" };
+  const done = sitIsDone(r);
+  if (r.build_actual) return { date: r.build_actual, note: "actual", done };
+  if (r.build_revised) return { date: r.build_revised, note: "revised", done };
+  if (r.build_planned) return { date: r.build_planned, note: "planned", done };
+  return { date: null, note: "", done };
 }
 function readyCell(x) {
-  if (!x.date) return `<span class="muted">No date</span>`;
-  return fmtDate(x.date) + (x.note ? ` <span class="sd-gsub">${x.note}</span>` : "");
+  if (!x.date) return x.done ? `<span class="sd-gsub">completed</span>` : `<span class="muted">No date</span>`;
+  return fmtDate(x.date) + (x.note ? ` <span class="sd-gsub">${x.done ? "completed" : x.note}</span>` : "");
 }
 
 // "na" | "nodate" | "before" | "after" | "wkN" for one object against a cycle.
 function sitBucketFor(x, cycle) {
   if (x.na) return "na";
+  if (x.done) return "before";          // completed → ready for any cycle, never "upcoming"
   if (!x.date) return "nodate";
   if (x.date < cycle.start) return "before";
   if (x.date > cycle.end) return "after";
@@ -1597,7 +1602,7 @@ function sitExportRow(r, bucketLabel, x) {
   return {
     "Test Cycle Bucket": bucketLabel, "RICE ID": r.rice_id, "Object Name": r.object_name,
     "Type": r.rice_type, "Module": r.module || "",
-    "Ready Date": x.date || "", "Ready Date Basis": x.note,
+    "Ready Date": x.date || "", "Ready Date Basis": x.done ? "completed" : x.note,
     "Object Status": r.object_status || "", "Dev Status": r.dev_status || "",
     "Dev %": r.dev_pct ?? "", "Workbook SIT Readiness": r.sit_readiness || "",
     "Owner": r.technical_owner || r.functional_owner || "",
