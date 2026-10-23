@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build a double-click offline bundle for the CURRENT OS (PyInstaller can't cross-compile).
-# Output: dist/RICE-Tracker/ (zip it and share). Run on Windows via Git Bash, or use build.bat.
+# Output: dist/RICE-Tracker/ (zip it and share). On Windows use build.bat.
 set -euo pipefail
 cd "$(dirname "$0")"
 [ -x .venv/bin/python ] || python3 -m venv .venv

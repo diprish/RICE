@@ -106,7 +106,7 @@ Flask · pandas · openpyxl on the backend; vanilla JS with Chart.js, AG Grid Co
 
 `./build.sh` produces `dist/RICE-Tracker/` — a self-contained app (Python + all JS/CSS/fonts bundled, no internet needed).
 Zip that folder and share it; recipients unzip and double-click `RICE-Tracker` (a console window opens, then the browser).
-PyInstaller can't cross-compile, so build on each OS you need (macOS, Windows).
+PyInstaller can't cross-compile: run `build.sh` on macOS/Linux and `build.bat` on Windows.
 
 Persistent data lives in `data/` next to the executable (workbook, saved filters, baselines). Upload a newer
 workbook in the UI, or drop `rice_tracker_data.xlsx` into `data/`. Keep `data/` when replacing the app with a new build.
