@@ -164,6 +164,7 @@ COLUMN_MAP = {
     "Build + UT Completion Date - A": "build_actual",
     "Dev+ UT Completion Date - Planned": "build_planned",
     "Dev + UT Completion Date - Actual": "build_actual",
+    "Dev + UT Completion Date - Revised": "build_revised",
     "Dev %": "dev_pct_raw",
     "Dev Status": "dev_status",
     "FUT Start Date - Actual": "fut_start_actual",
@@ -345,7 +346,7 @@ def process(path):
         # dates
         for key in ("spec_planned", "spec_revised", "spec_start_actual", "spec_actual",
                     "spec_approval", "dev_start_planned", "dev_start_actual",
-                    "build_planned", "build_actual", "fut_start_actual",
+                    "build_planned", "build_revised", "build_actual", "fut_start_actual",
                     "fut_planned", "fut_actual"):
             rec[key] = parse_date(g(row, key))
 

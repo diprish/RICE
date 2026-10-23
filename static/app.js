@@ -1429,8 +1429,8 @@ function renderCapacity(recs) {
 /* ============================================================
    TEST CYCLE READINESS — the user picks a test cycle (SIT 1, SIT 2,
    UAT … from the program timeline) and every object is placed by its
-   ready date: actual Dev+UT completion, else the revised delivery
-   (spec slip recalculated), else planned. Before the cycle starts,
+   ready date: Dev + UT completion — Actual, else Revised, else
+   Planned. Before the cycle starts,
    in which cycle week, or after the cycle ends / no date at all.
    ============================================================ */
 const SIT_COLOR = { before: "#3f9d6b", during: "#00A3E0", after: "#DA291C", blank: "#e0a33e" };
@@ -1449,13 +1449,13 @@ function cycleWeeks(c) {
   return out;
 }
 
-// When the object is testable: actual build, else revised (spec-slip recalculated), else planned.
+// When the object is testable: Actual Dev+UT completion, else Revised, else Planned.
 function sitReady(r) {
   if ((r.dev_status || "").trim().toLowerCase() === "not applicable") return { na: true };
-  const date = r.build_actual || r.recalc_delivery || r.delivery_date || r.gantt_delivery || null;
-  const note = r.build_actual ? "actual" : r.needs_replan ? "revised"
-    : (!r.delivery_date && r.gantt_delivery_estimated) ? "est." : "";
-  return { date, note };
+  if (r.build_actual) return { date: r.build_actual, note: "actual" };
+  if (r.build_revised) return { date: r.build_revised, note: "revised" };
+  if (r.build_planned) return { date: r.build_planned, note: "planned" };
+  return { date: null, note: "" };
 }
 function readyCell(x) {
   if (!x.date) return `<span class="muted">No date</span>`;
@@ -1491,7 +1491,7 @@ function renderSitReadiness(recs) {
   const weeks = cycleWeeks(cycle);
   const N = cycle.name;
   $("#sitTitle").textContent = `${N} Readiness`;
-  $("#sitSub").innerHTML = `— each object by its <b>ready date</b> (actual or revised build/dev completion) · testable <b>before</b>, <b>during</b> (by week) or <b>after</b> ${esc(N)} (${fmtDate(cycle.start)} – ${fmtDate(cycle.end)})`;
+  $("#sitSub").innerHTML = `— each object by its <b>ready date</b> (Dev + UT completion: actual → revised → planned) · testable <b>before</b>, <b>during</b> (by week) or <b>after</b> ${esc(N)} (${fmtDate(cycle.start)} – ${fmtDate(cycle.end)})`;
 
   const ready = new Map(recs.map(r => [r.rice_id, sitReady(r)]));
   const readyOf = (r) => ready.get(r.rice_id) || {};
@@ -1555,7 +1555,7 @@ function renderSitReadiness(recs) {
   // ---- Detail: WILL NOT be ready within the cycle ----
   const notGroups = [
     { label: `After ${N}`, sub: "", color: SIT_COLOR.after, rows: recs.filter(r => inB(r) === "after") },
-    { label: "No ready date", sub: "no actual, revised or planned build date", color: SIT_COLOR.blank, rows: recs.filter(r => inB(r) === "nodate") },
+    { label: "No ready date", sub: "no actual, revised or planned Dev + UT date", color: SIT_COLOR.blank, rows: recs.filter(r => inB(r) === "nodate") },
   ].filter(g => g.rows.length);
   $("#sitNotTitle").innerHTML = `<b>Will not</b> be ready in ${esc(N)}`;
   $("#sitNot").innerHTML = sitGroupedTable(notGroups, readyOf);
@@ -1597,7 +1597,7 @@ function sitExportRow(r, bucketLabel, x) {
   return {
     "Test Cycle Bucket": bucketLabel, "RICE ID": r.rice_id, "Object Name": r.object_name,
     "Type": r.rice_type, "Module": r.module || "",
-    "Ready Date": x.date || "", "Ready Date Basis": x.note || (x.date ? "planned" : ""),
+    "Ready Date": x.date || "", "Ready Date Basis": x.note,
     "Object Status": r.object_status || "", "Dev Status": r.dev_status || "",
     "Dev %": r.dev_pct ?? "", "Workbook SIT Readiness": r.sit_readiness || "",
     "Owner": r.technical_owner || r.functional_owner || "",
