@@ -13,9 +13,9 @@ set PY=.venv\Scripts\python.exe
 %PY% -m PyInstaller --noconfirm --clean --onedir --name RICE-Tracker ^
   --add-data "templates;templates" --add-data "static;static" app.py || goto :fail
 
-rem Seed the data folder with the current workbook so recipients open straight to the dashboard.
-if not exist dist\RICE-Tracker\data mkdir dist\RICE-Tracker\data
-if exist rice_tracker_data.xlsx copy /y rice_tracker_data.xlsx dist\RICE-Tracker\data\ >nul
+rem Ship the current workbook as a first-run seed; live data lives in %%APPDATA%%\RICE-Tracker.
+if not exist dist\RICE-Tracker\seed mkdir dist\RICE-Tracker\seed
+if exist rice_tracker_data.xlsx copy /y rice_tracker_data.xlsx dist\RICE-Tracker\seed\ >nul
 
 echo Built dist\RICE-Tracker - zip that folder to share.
 exit /b 0

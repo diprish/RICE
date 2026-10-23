@@ -27,12 +27,32 @@ from flask import Flask, jsonify, request, render_template, send_file
 FROZEN = getattr(sys, "frozen", False)  # running as a PyInstaller bundle
 # Read-only app resources (templates/static) live inside the bundle when frozen.
 BASE_DIR = getattr(sys, "_MEIPASS", None) or os.path.abspath(os.path.dirname(__file__))
-# Mutable data (workbook, saved filters, baselines) must outlive the bundle's
-# temp dir, so frozen builds keep it in a "data" folder next to the executable.
+# Mutable data (workbook, saved filters, baselines) must outlive both the bundle's
+# temp dir and rebuilds of dist/, so frozen builds keep it in a per-user folder.
 # RICE_DATA_DIR overrides either mode.
-DATA_DIR = os.environ.get("RICE_DATA_DIR") or (
-    os.path.join(os.path.dirname(sys.executable), "data") if FROZEN else BASE_DIR)
+def _user_data_dir():
+    if sys.platform == "darwin":
+        root = os.path.expanduser("~/Library/Application Support")
+    elif sys.platform == "win32":
+        root = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        root = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(root, "RICE-Tracker")
+
+DATA_DIR = os.environ.get("RICE_DATA_DIR") or (_user_data_dir() if FROZEN else BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
+if FROZEN:
+    # First run: seed from the workbook shipped beside the app ("seed/"), and pull in
+    # anything an older build left in "data/" beside the app. Never overwrites existing files.
+    import shutil
+    _app_dir = os.path.dirname(sys.executable)
+    for _src in ("data", "seed"):
+        _d = os.path.join(_app_dir, _src)
+        if os.path.isdir(_d):
+            for _f in os.listdir(_d):
+                _t = os.path.join(DATA_DIR, _f)
+                if not os.path.exists(_t) and os.path.isfile(os.path.join(_d, _f)):
+                    shutil.copy2(os.path.join(_d, _f), _t)
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 DATA_FILE = os.path.join(DATA_DIR, "rice_tracker_data.xlsx")
 SAVED_FILTERS_FILE = os.path.join(DATA_DIR, "saved_filters.json")

@@ -8,7 +8,8 @@ PY=.venv/bin/python
 $PY -m pip install --quiet -r requirements.txt pyinstaller
 $PY -m PyInstaller --noconfirm --clean --onedir --name RICE-Tracker \
   --add-data "templates:templates" --add-data "static:static" app.py
-# Seed the data folder with the current workbook so recipients open straight to the dashboard.
-mkdir -p dist/RICE-Tracker/data
-[ -f rice_tracker_data.xlsx ] && cp rice_tracker_data.xlsx dist/RICE-Tracker/data/
+# Ship the current workbook as a first-run seed. Live data (saved filters, uploads) lives in the
+# per-user data folder, so rebuilding or replacing this folder never touches it.
+mkdir -p dist/RICE-Tracker/seed
+[ -f rice_tracker_data.xlsx ] && cp rice_tracker_data.xlsx dist/RICE-Tracker/seed/
 echo "Built dist/RICE-Tracker — zip that folder to share."

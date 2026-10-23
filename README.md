@@ -108,6 +108,8 @@ Flask · pandas · openpyxl on the backend; vanilla JS with Chart.js, AG Grid Co
 Zip that folder and share it; recipients unzip and double-click `RICE-Tracker` (a console window opens, then the browser).
 PyInstaller can't cross-compile: run `build.sh` on macOS/Linux and `build.bat` on Windows.
 
-Persistent data lives in `data/` next to the executable (workbook, saved filters, baselines). Upload a newer
-workbook in the UI, or drop `rice_tracker_data.xlsx` into `data/`. Keep `data/` when replacing the app with a new build.
+Persistent data (workbook, saved filters, baselines) lives in a per-user folder, not in the build, so rebuilding or
+replacing `dist/RICE-Tracker/` never loses it: `~/Library/Application Support/RICE-Tracker` (macOS),
+`%APPDATA%\RICE-Tracker` (Windows), `~/.local/share/RICE-Tracker` (Linux). The workbook in the bundle's `seed/` folder
+is copied there on first run only; after that, upload a newer one in the UI. Each user on a machine has their own data.
 Override the location with `RICE_DATA_DIR`. If port 5000 is busy the bundle picks the next free port.
